@@ -1,0 +1,70 @@
+{
+  "tools": [
+    {
+      "name": "arxiv_summarizer",
+      "description": "Fetches and summarizes academic papers using Arxiv API. Takes a research topic or keyword and returns summaries of relevant papers.",
+      "input": "query string (research topic or keyword)",
+      "output": "list of paper summaries with titles, authors, and abstracts"
+    },
+    {
+      "name": "semantic_scholar",
+      "description": "**RESEARCH TOOL** - Searches 200M+ academic papers across ALL disciplines using Semantic Scholar API. Provides citation counts, influential citation metrics, and impact scores. More comprehensive than ArXiv - covers computer science, medicine, biology, physics, and more.",
+      "input": "research query or topic (any academic field)",
+      "output": "list of highly-cited papers with titles, authors, abstracts, citation counts, influence scores, and URLs"
+    },
+    {
+      "name": "pubmed_search",
+      "description": "**BIOMEDICAL RESEARCH TOOL** - Searches 35M+ biomedical and life sciences articles using PubMed/MEDLINE database. Essential for medical, healthcare, and biological research queries.",
+      "input": "biomedical research query or medical topic",
+      "output": "list of peer-reviewed articles with titles, authors, journal info, abstracts, and PubMed IDs"
+    },
+    {
+      "name": "pdf_parser",
+      "description": "Extracts full text content from PDF research papers and documents. Useful for analyzing downloaded papers or local research documents.",
+      "input": "file path to PDF document",
+      "output": "extracted text content with metadata (word count, file size)"
+    },
+    {
+      "name": "wikipedia_search",
+      "description": "Retrieves brief summaries from Wikipedia using the Wikipedia API. Takes a topic name and returns relevant Wikipedia content.",
+      "input": "topic name or search query",
+      "output": "Wikipedia page summary and key information"
+    },
+    {
+      "name": "news_fetcher",
+      "description": "Fetches latest news articles using NewsAPI. Takes keywords and returns recent articles with titles, descriptions, and sources.",
+      "input": "keyword or topic for news search",
+      "output": "list of recent news articles with metadata"
+    },
+    {
+      "name": "sentiment_analyzer",
+      "description": "Performs sentiment analysis using HuggingFace transformers. Analyzes text to determine positive, negative, or neutral sentiment with confidence scores.",
+      "input": "text content to analyze",
+      "output": "sentiment label (positive/negative/neutral) and confidence score"
+    },
+    {
+      "name": "data_plotter",
+      "description": "Creates simple data visualizations using matplotlib. Takes structured data and generates charts, graphs, or plots as image files.",
+      "input": "structured data (lists, dictionaries) and chart type specification",
+      "output": "path to generated chart image file"
+    },
+    {
+      "name": "document_writer",
+      "description": "Generates professional PDF reports with formatted text, sections, and images. Can create comprehensive research reports, summaries, and documentation.",
+      "input": "JSON structure with content, sections, and formatting instructions",
+      "output": "path to generated PDF file"
+    },
+    {
+      "name": "qa_engine",
+      "description": "**PRIMARY TOOL** - Generates comprehensive, detailed answers using OpenRouter LLM API. MUST be used as final step to synthesize information from other tools into a complete answer. Takes questions and context to provide intelligent, well-structured responses.",
+      "input": "question text and optional context (can include outputs from previous tools)",
+      "output": "comprehensive, detailed answer with explanations and insights"
+    },
+    {
+      "name": "document_writer",
+      "description": "Generates structured PDF reports using fpdf. Combines text content and images to create formatted PDF documents.",
+      "input": "text content, images (optional), and formatting specifications",
+      "output": "path to generated PDF file"
+    }
+  ]
+}
