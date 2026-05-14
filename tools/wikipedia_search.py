@@ -1,250 +1,293 @@
 """
-Wikipedia Search Tool
-Retrieves brief summaries from Wikipedia using the Wikipedia API.
+Wikipedia Search Tool — DualMind v3
+Fetches rich Wikipedia content using multiple strategies:
+  1. REST summary API  (fast intro paragraph)
+  2. Full intro section via parse API  (richer content)
+  3. opensearch → REST summary  (handles alternate titles)
+  4. Full-text search → REST summary  (most robust)
+  5. Shorter keyword fallback
+  6. Hard-coded topic fallback
 """
 
 import logging
-import json
 import re
 import urllib.parse
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
 
 import requests
 
-class WikipediaSearch:
-    """Tool for searching and retrieving Wikipedia content."""
+logger = logging.getLogger(__name__)
 
-    def __init__(self):
-        """Initialize the Wikipedia search tool."""
-        self.base_url = "https://en.wikipedia.org/api/rest_v1/page/summary"
-        self.search_url = "https://en.wikipedia.org/w/api.php"
-        self.logger = logging.getLogger(__name__)
+# ── Constants ──────────────────────────────────────────────────────────────────
+_UA       = "DualMind-Orchestrator/3.0 (research; contact@dualmind.ai)"
+_REST     = "https://en.wikipedia.org/api/rest_v1/page/summary"
+_API      = "https://en.wikipedia.org/w/api.php"
+_TIMEOUT  = 14
 
-    def get_closest_title(self, query: str) -> Optional[str]:
-        """Search for a topic and return the most relevant Wikipedia title."""
-        try:
-            params = {
-                'action': 'opensearch',
-                'search': query,
-                'limit': 1,
-                'namespace': 0,
-                'format': 'json'
-            }
+_STOPWORDS = {
+    "a","an","the","and","or","for","with","about","into","from","over",
+    "last","recent","analysis","analyze","analyse","report","generate",
+    "summarize","summarise","perform","comprehensive","investigation",
+    "impact","impacts","include","including","across","trend","trends",
+    "data","visualize","visualise","visualization","societal","study",
+    "studies","research","information","create","detailed","latest",
+    "please","tell","me","what","is","are","how","why","when","where",
+    "give","find","show","explain","describe","list","write","make",
+    "this","that","these","those","it","its","of","in","on","at","to",
+    "do","does","did","can","could","would","should","will","shall",
+    "chart","graph","plot","table","image","picture","photo","video",
+}
 
-            headers = {
-                'User-Agent': 'DualMind-Orchestrator/1.0 (Research Tool)'
-            }
+_NON_ENCYCLOPEDIC = {
+    "data","chart","graph","plot","table","image","news","latest news",
+    "recent news","current news","this data","analyse data","analyze data",
+    "create chart","make chart","summarize news","latest updates",
+}
 
-            response = requests.get(self.search_url, params=params, headers=headers, timeout=10)
-            response.raise_for_status()
+_HARDCODED: Dict[str, str] = {
+    "artificial intelligence": "Artificial intelligence (AI) is the capability of computational systems to perform tasks typically associated with human intelligence, such as learning, reasoning, problem-solving, perception, and language understanding. AI is a broad field encompassing machine learning, deep learning, natural language processing, computer vision, and robotics.",
+    "machine learning": "Machine learning (ML) is a field of study in artificial intelligence concerned with the development and study of statistical algorithms that can learn from data and generalise to unseen data, and thus perform tasks without explicit instructions.",
+    "deep learning": "Deep learning is part of a broader family of machine learning methods based on artificial neural networks with representation learning. Learning can be supervised, semi-supervised or unsupervised.",
+    "natural language processing": "Natural language processing (NLP) is an interdisciplinary subfield of computer science and linguistics. It is primarily concerned with giving computers the ability to support and manipulate human language.",
+    "quantum computing": "Quantum computing is a type of computation whose operations can harness the phenomena of quantum mechanics, such as superposition, interference, and entanglement. Devices that perform quantum computations are known as quantum computers.",
+    "blockchain": "A blockchain is a distributed ledger with growing lists of records (blocks) that are securely linked together via cryptographic hashes. Each block contains a cryptographic hash of the previous block, a timestamp, and transaction data.",
+    "climate change": "Climate change refers to long-term shifts in temperatures and weather patterns. Such shifts can be natural, due to changes in the sun's activity or large volcanic eruptions. But since the 1800s, human activities have been the main driver of climate change.",
+    "cryptocurrency": "A cryptocurrency is a digital currency designed to work through a computer network that is not reliant on any central authority, such as a government or bank, to uphold or maintain it.",
+    "python programming": "Python is a high-level, general-purpose programming language. Its design philosophy emphasises code readability with the use of significant indentation. Python is dynamically typed and garbage-collected.",
+    "news": "News is information about current events. This may be provided through many different media: word of mouth, printing, postal systems, broadcasting, electronic communication, or through the testimony of observers and witnesses to events.",
+}
 
-            results = response.json()
-            if results and len(results) >= 2 and results[1]:
-                return results[1][0]  # The best matching article title
 
-        except Exception as e:
-            self.logger.error(f"Error in Wikipedia title search: {e}")
+# ── HTTP helper ────────────────────────────────────────────────────────────────
 
+def _get(url: str, params: dict = None) -> Optional[requests.Response]:
+    try:
+        r = requests.get(url, params=params,
+                         headers={"User-Agent": _UA}, timeout=_TIMEOUT)
+        r.raise_for_status()
+        return r
+    except Exception as e:
+        logger.debug("HTTP GET failed %s: %s", url, e)
         return None
 
 
-    def search_page(self, topic: str) -> Dict[str, Any]:
-        """Search for a topic on Wikipedia with prompt-aware fallbacks."""
-        clean_topic = self._preprocess_query(topic)
+# ── Wikipedia API strategies ───────────────────────────────────────────────────
 
-        if not clean_topic:
-            return self._get_fallback_summary(topic)
+def _rest_summary(title: str) -> Optional[Dict[str, Any]]:
+    """Strategy 1 — REST summary endpoint (fast, clean intro paragraph)."""
+    enc = urllib.parse.quote(title.replace(" ", "_"), safe="")
+    r = _get(f"{_REST}/{enc}")
+    if not r:
+        return None
+    d = r.json()
+    if d.get("type") == "disambiguation":
+        return None
+    extract = d.get("extract", "").strip()
+    if len(extract) < 40:
+        return None
+    return {
+        "title":     d.get("title", title),
+        "extract":   extract,
+        "url":       d.get("content_urls", {}).get("desktop", {}).get(
+                         "page", f"https://en.wikipedia.org/wiki/{enc}"),
+        "thumbnail": d.get("thumbnail", {}).get("source", "") if "thumbnail" in d else "",
+        "success":   True,
+        "source":    "wikipedia_rest",
+    }
 
-        search_variants = self._build_search_variants(clean_topic)
-        last_result: Optional[Dict[str, Any]] = None
 
-        for variant in search_variants:
-            result = self._fetch_summary(variant)
-            if result.get('success'):
-                return result
-            last_result = result
+def _full_intro(title: str) -> Optional[str]:
+    """Strategy 2 — parse API: fetch the full intro section (richer than REST)."""
+    r = _get(_API, {
+        "action":      "query",
+        "titles":      title,
+        "prop":        "extracts",
+        "exintro":     True,
+        "explaintext": True,
+        "format":      "json",
+    })
+    if not r:
+        return None
+    pages = r.json().get("query", {}).get("pages", {})
+    for page in pages.values():
+        if page.get("pageid", -1) == -1:
+            return None
+        extract = page.get("extract", "").strip()
+        if len(extract) > 100:
+            return extract
+    return None
 
-        fallback_topic = (
-            (last_result or {}).get('title')
-            or self._extract_keywords(clean_topic)
-            or clean_topic
-        )
-        return self._get_fallback_summary(fallback_topic)
 
-    def _candidate_titles(self, phrase: str, limit: int = 5) -> List[str]:
-        """Return a list of possible Wikipedia titles for a phrase."""
-        titles: List[str] = []
+def _opensearch(query: str, limit: int = 6) -> List[str]:
+    """Return article titles from Wikipedia opensearch."""
+    r = _get(_API, {"action": "opensearch", "search": query,
+                    "limit": limit, "namespace": 0, "format": "json"})
+    if not r:
+        return []
+    d = r.json()
+    return [t for t in (d[1] if isinstance(d, list) and len(d) >= 2 else []) if t]
 
-        # Direct attempt first
-        if phrase:
-            titles.append(phrase)
 
-        # Use opensearch to get additional suggestions
-        try:
-            params = {
-                'action': 'opensearch',
-                'search': phrase,
-                'limit': limit,
-                'namespace': 0,
-                'format': 'json'
-            }
-            headers = {
-                'User-Agent': 'DualMind-Orchestrator/1.0 (Research Tool)'
-            }
-            res = requests.get(self.search_url, params=params, headers=headers, timeout=10)
-            res.raise_for_status()
-            data = res.json()
-            if isinstance(data, list) and len(data) >= 2:
-                for title in data[1]:
-                    if title and title not in titles:
-                        titles.append(title)
-        except Exception as e:
-            self.logger.debug(f"opensearch failed for '{phrase}': {e}")
+def _fulltext(query: str, limit: int = 4) -> List[str]:
+    """Return article titles from Wikipedia full-text search."""
+    r = _get(_API, {"action": "query", "list": "search",
+                    "srsearch": query, "srlimit": limit, "format": "json"})
+    if not r:
+        return []
+    return [i["title"] for i in r.json().get("query", {}).get("search", []) if i.get("title")]
 
-        return titles[:limit]
 
-    def _try_summary(self, title: str) -> Dict[str, Any]:
-        """Attempt to fetch a summary for a single title."""
-        encoded_title = urllib.parse.quote(title.replace(' ', '_'))
-        url = f"{self.base_url}/{encoded_title}"
-        headers = {'User-Agent': 'DualMind-Orchestrator/1.0 (Research Tool)'}
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+def _fetch_best(title: str) -> Optional[Dict[str, Any]]:
+    """Fetch REST summary, then try to enrich with full intro."""
+    result = _rest_summary(title)
+    if not result:
+        return None
+    # Try to get richer intro text
+    full = _full_intro(title)
+    if full and len(full) > len(result["extract"]):
+        result["extract"] = full
+    return result
 
-            # Skip disambiguation pages
-            if data.get('type') == 'disambiguation':
-                return {'success': False, 'title': title, 'error': 'disambiguation'}
 
+# ── Topic extraction ───────────────────────────────────────────────────────────
+
+def _extract_topic(raw: str) -> str:
+    """Extract the encyclopedic topic from a noisy orchestrator query."""
+    text = raw.strip()
+
+    # Strip orchestrator context injection
+    if "|||CONTEXT:" in text:
+        text = text.split("|||CONTEXT:")[0].strip()
+
+    # Pattern-based extraction
+    patterns = [
+        r"(?:about|on|for|regarding|related to|concerning)\s+(.+)",
+        r"(?:what is|what are|explain|describe|define|tell me about)\s+(.+)",
+        r"(?:summarize|summarise|summary of)\s+(?:the\s+)?(.+)",
+        r"(?:latest|recent|current)\s+(?:news|updates?|developments?)\s+(?:on|about|in|for)?\s*(.+)",
+        r"(?:research|find|search)\s+(?:on|about|for)?\s*(.+)",
+        r"(?:how does|how do|how is|how are)\s+(.+?)(?:\s+work|\s+function|\s+operate)?$",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            candidate = m.group(1).strip().rstrip(".,;:?!")
+            words = [w for w in candidate.lower().split() if w not in _STOPWORDS]
+            if words:
+                return candidate[:120]
+
+    # Strip leading action verbs
+    text = re.sub(
+        r"^(?:analyse|analyze|summarize|summarise|explain|describe|research|"
+        r"find|search|show|tell|give|create|generate|write|make|list|"
+        r"what|how|why|when|where|get|fetch|retrieve)\s+",
+        "", text, flags=re.IGNORECASE,
+    ).strip()
+
+    # Strip trailing noise
+    text = re.sub(
+        r"\s+(?:and|with|including|using|to)\s+(?:create|generate|make|build|"
+        r"produce|visualize|visualise|plot|chart|graph|table|report|document|"
+        r"pdf|image|picture|summary|overview).*$",
+        "", text, flags=re.IGNORECASE,
+    ).strip()
+
+    # Trim to meaningful keywords if too long
+    if len(text.split()) > 7:
+        tokens = re.findall(r"[A-Za-z0-9\-']+", text)
+        kw = [t for t in tokens if t.lower() not in _STOPWORDS and not t.isdigit()]
+        text = " ".join(kw[:5])
+
+    return text.strip()[:120] or raw[:80]
+
+
+def _hardcoded_fallback(topic: str) -> Dict[str, Any]:
+    key = topic.lower().strip()
+    for k, v in _HARDCODED.items():
+        if k in key or key in k:
             return {
-                'title': data.get('title', title),
-                'extract': data.get('extract', 'No summary available'),
-                'url': data.get('content_urls', {}).get('desktop', {}).get('page', f'https://en.wikipedia.org/wiki/{encoded_title}'),
-                'thumbnail': data.get('thumbnail', {}).get('source', '') if 'thumbnail' in data else '',
-                'success': True
+                "title":   k.title(),
+                "extract": v,
+                "url":     f"https://en.wikipedia.org/wiki/{urllib.parse.quote(k.replace(' ','_'))}",
+                "success": False,
+                "source":  "hardcoded",
             }
-        except Exception as e:
-            # Log at debug to avoid spam; we'll try other titles
-            self.logger.debug(f"Summary fetch failed for '{title}': {e}")
-            return {'success': False, 'title': title, 'error': 'request_failed'}
+    return {
+        "title":   topic,
+        "extract": (f'**{topic}** — Wikipedia content could not be retrieved. '
+                    f'Visit: https://en.wikipedia.org/wiki/{urllib.parse.quote(topic.replace(" ","_"))}'),
+        "url":     f"https://en.wikipedia.org/wiki/{urllib.parse.quote(topic.replace(' ','_'))}",
+        "success": False,
+        "source":  "generic_fallback",
+    }
 
-    def _fetch_summary(self, search_phrase: str) -> Dict[str, Any]:
-        """Fetch summary using multiple candidate titles until success."""
-        for candidate in self._candidate_titles(search_phrase):
-            result = self._try_summary(candidate)
-            if result.get('success'):
-                return result
-        # If none succeeded, return the last attempt info
-        return result
 
-    def _preprocess_query(self, query: str) -> str:
-        """Preprocess and clean the query to remove problematic characters."""
-        if not query:
-            return ""
-        
-        # Remove newlines and other problematic whitespace
-        cleaned = query.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-        
-        # Remove multiple spaces and trim
-        cleaned = ' '.join(cleaned.split())
-        
-        # Remove any non-printable characters except spaces
-        cleaned = ''.join(char for char in cleaned if char.isprintable() or char == ' ')
-        
-        return cleaned.strip()
+# ── Main class ─────────────────────────────────────────────────────────────────
 
-    def _build_search_variants(self, clean_topic: str) -> List[str]:
-        """Create prompt-aware search variants for Wikipedia calls."""
-        variants = []
+class WikipediaSearch:
 
-        # Primary attempt: trimmed clean topic (avoid extremely long URLs)
-        primary = clean_topic[:180]
-        if primary:
-            variants.append(primary)
+    def search_page(self, raw_query: str) -> Dict[str, Any]:
+        topic = _extract_topic(raw_query)
+        logger.debug("Wikipedia: raw=%r → topic=%r", raw_query[:80], topic)
 
-        # Secondary attempt: keyword-focused search
-        keyword_phrase = self._extract_keywords(clean_topic)
-        if keyword_phrase and keyword_phrase.lower() not in {v.lower() for v in variants}:
-            variants.append(keyword_phrase)
+        if not topic or topic.lower() in _NON_ENCYCLOPEDIC:
+            return _hardcoded_fallback(topic or raw_query[:60])
 
-        return variants
+        # Strategy 1 — direct title
+        r = _fetch_best(topic)
+        if r:
+            return r
 
-    def _extract_keywords(self, text: str, max_keywords: int = 6) -> str:
-        """Extract a concise keyword phrase from the prompt."""
-        tokens = re.findall(r"[A-Za-z0-9\-']+", text.lower())
-        stopwords = {
-            'the', 'and', 'or', 'for', 'with', 'about', 'into', 'from', 'over', 'last',
-            'recent', 'analysis', 'analyze', 'report', 'generate', 'summarize', 'perform',
-            'comprehensive', 'investigation', 'impact', 'impacts', 'include', 'including',
-            'across', 'trend', 'trends', 'data', 'visualize', 'visualization', 'societal',
-            'study', 'studies', 'research', 'information', 'create', 'detailed', 'latest'
-        }
+        # Strategy 2 — opensearch suggestions
+        for title in _opensearch(topic):
+            r = _fetch_best(title)
+            if r:
+                return r
 
-        keywords: List[str] = []
-        for token in tokens:
-            if token in stopwords:
-                continue
-            if token.isdigit():
-                continue
-            if token not in keywords:
-                keywords.append(token)
-            if len(keywords) >= max_keywords:
-                break
+        # Strategy 3 — full-text search
+        for title in _fulltext(topic):
+            r = _fetch_best(title)
+            if r:
+                return r
 
-        return ' '.join(keywords)
+        # Strategy 4 — shorter keyword phrase
+        tokens = [t for t in topic.split() if t.lower() not in _STOPWORDS]
+        if len(tokens) >= 2:
+            short = " ".join(tokens[:3])
+            for title in _opensearch(short, limit=3):
+                r = _fetch_best(title)
+                if r:
+                    return r
 
-    def _get_fallback_summary(self, topic: str) -> Dict[str, Any]:
-        """Get a fallback summary when API fails."""
-        fallback_summaries = {
-            'artificial intelligence': 'Artificial Intelligence (AI) is the simulation of human intelligence processes by machines, especially computer systems. These processes include learning, reasoning, and self-correction. AI research has been highly successful in developing effective techniques for solving a wide range of problems.',
-            'machine learning': 'Machine learning is a subset of artificial intelligence that enables computers to learn and improve from experience without being explicitly programmed. It focuses on the development of computer programs that can access data and use it to learn for themselves.',
-            'deep learning': 'Deep learning is part of a broader family of machine learning methods based on artificial neural networks. It can automatically learn representations from data without manual feature engineering.',
-            'natural language processing': 'Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial intelligence concerned with the interactions between computers and human language.',
-            'computer vision': 'Computer vision is an interdisciplinary field that deals with how computers can gain high-level understanding from digital images or videos. It seeks to automate tasks that the human visual system can do.',
-            'robotics': 'Robotics is an interdisciplinary branch of engineering and science that includes mechanical engineering, electronic engineering, information engineering, computer science, and others.'
-        }
+        logger.warning("Wikipedia: all strategies failed for %r", topic)
+        return _hardcoded_fallback(topic)
 
-        summary = fallback_summaries.get(topic.lower(), f'"{topic}" is a topic in computer science and technology. The Wikipedia API is currently unavailable, but this represents knowledge about the subject.')
+    def run(self, raw_query: str) -> str:
+        result = self.search_page(raw_query)
 
-        return {
-            'title': topic,
-            'extract': summary,
-            'url': f"https://en.wikipedia.org/wiki/{topic.replace(' ', '_')}",
-            'success': False
-        }
+        title   = result["title"]
+        extract = result["extract"]
+        url     = result["url"]
+        live    = result.get("success", False)
 
-    def run(self, topic: str) -> str:
-        """
-        Main method to run the Wikipedia search tool.
+        # Format richly for the synthesizer / QA engine
+        lines = [
+            f"### 📖 Wikipedia: {title}",
+            "",
+            extract,
+            "",
+            f"🔗 **Read more:** [{url}]({url})",
+        ]
 
-        Args:
-            topic (str): Topic to search for
+        if not live:
+            lines.append("")
+            lines.append("*⚠️ Live Wikipedia data unavailable — showing cached summary.*")
 
-        Returns:
-            str: Formatted Wikipedia summary
-        """
-        result = self.search_page(topic)
+        return "\n".join(lines)
 
-        formatted_result = f"## {result['title']}\n\n"
-        formatted_result += f"{result['extract']}\n\n"
-        formatted_result += f"**Source:** [{result['url']}]({result['url']})"
 
-        if not result['success']:
-            formatted_result += "\n\n*Note: This is a fallback summary as the Wikipedia API could not be accessed.*"
-
-        return formatted_result
-
+# ── Standalone entry point ─────────────────────────────────────────────────────
 
 def wikipedia_search_tool(topic: str) -> str:
-    """
-    Standalone function for Wikipedia search tool.
-
-    Args:
-        topic (str): Topic to search for
-
-    Returns:
-        str: Formatted Wikipedia summary
-    """
-    search = WikipediaSearch()
-    return search.run(topic)
+    """Called by the orchestrator pipeline."""
+    return WikipediaSearch().run(topic)

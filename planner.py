@@ -120,53 +120,33 @@ class Planner:
         return query[:100].strip()
     
     def _create_research_plan(self, query: str) -> Dict[str, Any]:
-        """Create a research-focused task plan."""
-        # Extract keywords for tool inputs
+        """Create a comprehensive research-focused task plan using all relevant tools."""
         keywords = self._extract_keywords(query)
-        
         return {
             "query": query,
-            "reasoning": "User wants to research a topic, so I'll gather information from multiple sources.",
+            "reasoning": "Comprehensive research query — gathering from encyclopedic, academic, news, and citation sources before synthesizing.",
             "pipeline": [
-                {
-                    "tool": "wikipedia_search",
-                    "purpose": "Get foundational knowledge about the topic",
-                    "input": keywords
-                },
-                {
-                    "tool": "news_fetcher",
-                    "purpose": "Find recent developments and news",
-                    "input": keywords
-                },
-                {
-                    "tool": "arxiv_summarizer",
-                    "purpose": "Get academic research and papers",
-                    "input": keywords
-                }
+                {"tool": "wikipedia_search",  "purpose": "Get foundational encyclopedic background", "input": keywords},
+                {"tool": "arxiv_summarizer",  "purpose": "Find recent academic preprints and papers", "input": keywords},
+                {"tool": "semantic_scholar",  "purpose": "Find highly-cited peer-reviewed papers with citation metrics", "input": keywords},
+                {"tool": "news_fetcher",      "purpose": "Get current news and recent developments", "input": keywords},
+                {"tool": "qa_engine",         "purpose": "Synthesize all sources into a comprehensive answer", "input": query},
             ],
-            "final_output": "Comprehensive research summary with sources"
+            "final_output": "Comprehensive research summary with academic citations and current developments",
         }
 
     def _create_summary_plan(self, query: str) -> Dict[str, Any]:
-        """Create a summarization task plan."""
         keywords = self._extract_keywords(query)
-        
         return {
             "query": query,
-            "reasoning": "User wants a summary, so I'll gather and condense information.",
+            "reasoning": "Summary request — gather background and synthesize with AI.",
             "pipeline": [
-                {
-                    "tool": "wikipedia_search",
-                    "purpose": "Get main topic overview",
-                    "input": keywords
-                },
-                {
-                    "tool": "qa_engine",
-                    "purpose": "Generate intelligent summary",
-                    "input": f"Summarize: {keywords}"
-                }
+                {"tool": "wikipedia_search", "purpose": "Get main topic overview", "input": keywords},
+                {"tool": "arxiv_summarizer", "purpose": "Find relevant academic papers", "input": keywords},
+                {"tool": "news_fetcher",     "purpose": "Get recent developments", "input": keywords},
+                {"tool": "qa_engine",        "purpose": "Generate comprehensive summary", "input": query},
             ],
-            "final_output": "Concise summary of the topic"
+            "final_output": "Concise but comprehensive summary of the topic",
         }
 
     def _create_analysis_plan(self, query: str) -> Dict[str, Any]:
@@ -556,107 +536,71 @@ Create an IMPROVED task plan that addresses all the issues and suggestions above
         return adapted_plan
     
     def _create_llm_plan(self, user_query: str, similar_patterns: List[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Create a plan using LLM for intelligent analysis with learning context."""
-        
-        # Add learning context if available
-        learning_context = ""
-        if similar_patterns:
-            learning_context = "\n\nLEARNED PATTERNS (use as reference):\n"
-            for i, pattern in enumerate(similar_patterns[:2], 1):  # Top 2 patterns
-                learning_context += f"{i}. Similar query: {pattern.get('query', 'Unknown')}\n"
-                learning_context += f"   Similarity: {pattern.get('similarity', 0):.2f}\n"
-                learning_context += f"   Score: {pattern.get('score', 0)}/100\n"
-                tools_used = pattern.get('plan', {}).get('tools_used', [])
-                if tools_used:
-                    learning_context += f"   Successful tools: {', '.join(tools_used)}\n"
-        
-        # Prepare the system prompt for planning
-        system_prompt = """You are a JSON-only response bot. You MUST respond with ONLY valid JSON. No other text is allowed.
+        """Create a plan using LLM — uses all available tools intelligently."""
 
-Available tools:
-{tools_description}
+        tools_list = "\n".join(
+            f"- {t.get('name','?')}: {t.get('description','')}"
+            for t in self.tools
+        )
 
-⚠️ CRITICAL INSTRUCTIONS - FOLLOW EXACTLY:
-1. Your response MUST start with {{ and end with }}
-2. DO NOT write ANY text before the {{
-3. DO NOT write ANY text after the }}
-4. DO NOT use markdown code blocks (```)
-5. DO NOT include explanations or comments
-6. ONLY output valid, parseable JSON
+        system_prompt = (
+            "You are a task planner for an AI research assistant. "
+            "Respond with ONLY a JSON object — no prose, no markdown fences.\n\n"
+            f"Available tools:\n{tools_list}\n\n"
+            "Output format (strict JSON):\n"
+            '{"query":"...","reasoning":"...","pipeline":['
+            '{"tool":"tool_name","purpose":"why","input":"concise search phrase"}],'
+            '"final_output":"..."}\n\n'
+            "Planning rules:\n"
+            "- Use 3-6 tools for comprehensive coverage\n"
+            "- For research queries: use wikipedia_search + arxiv_summarizer + semantic_scholar + news_fetcher + qa_engine\n"
+            "- For analysis queries: add sentiment_analyzer or data_plotter\n"
+            "- For report queries: add document_writer at the end\n"
+            "- For medical/health queries: include pubmed_search\n"
+            "- ALWAYS end with qa_engine as the final synthesis step\n"
+            "- Tool inputs must be concise keyword phrases (under 80 chars)\n"
+            "- Each tool should have a distinct, meaningful purpose"
+        )
 
-Required structure:
-{{
-    "query": "original user query here",
-    "reasoning": "your planning reasoning",
-    "pipeline": [
-        {{"tool": "tool_name", "purpose": "why needed", "input": "tool input"}}
-    ],
-    "final_output": "what the pipeline will produce"
-}}
-
-Rules:
-- Use 2-5 tools maximum
-- Only use tools from available list above
-- Create logical sequences
-- ALWAYS include qa_engine as the LAST step to synthesize a comprehensive answer
-- For information gathering, use wikipedia_search, arxiv_summarizer, or news_fetcher BEFORE qa_engine
-- If similar successful patterns are provided, consider their tool choices
-- Ensure proper JSON syntax (commas, quotes, etc.)
-
-IMPORTANT: Your ENTIRE response must be valid JSON. Start typing {{ immediately."""
-
-        # Format available tools for the prompt
-        tools_description = ""
-        for tool in self.tools:
-            tools_description += f"- {tool.get('name', 'Unknown')}: {tool.get('description', 'No description')}\n"
-
-        prompt = f"User Query: {user_query}{learning_context}\n\nCreate a task plan:"
+        prompt = f"Create a comprehensive task plan for: {user_query}"
 
         llm_response = self.llm_client.call_llm(
             prompt=prompt,
-            system_prompt=system_prompt.format(tools_description=tools_description),
-            max_tokens=1500
+            system_prompt=system_prompt,
+            max_tokens=1500,
         )
 
-        if llm_response:
-            try:
-                # Use robust JSON parser with automatic fixing
-                if parse_llm_json:
-                    # Use the advanced JSON fixer
-                    expected_keys = ["query", "reasoning", "pipeline", "final_output"]
-                    plan_data = parse_llm_json(llm_response, expected_keys)
-                    
-                    # Additional validation
-                    if validate_plan_json and not validate_plan_json(plan_data):
-                        self.logger.warning("LLM plan failed validation, enhancing...")
-                        plan_data = self._validate_and_enhance_plan(plan_data, user_query)
-                else:
-                    # Fallback to old method if json_fixer not available
-                    clean_response = self._extract_json_from_response(llm_response)
-                    plan_data = json.loads(clean_response)
-                    plan_data = self._validate_and_enhance_plan(plan_data, user_query)
-                
-                # Validate and enhance the plan
-                plan_data = self._validate_and_enhance_plan(plan_data, user_query)
-                
-                # Add metadata
-                plan_data.update({
-                    "created_at": datetime.now().isoformat(),
-                    "planner_version": "2.0.0-llm",
-                    "available_tools": len(self.tools),
-                    "estimated_steps": len(plan_data.get("pipeline", [])),
-                    "llm_generated": True
-                })
-                
-                self.logger.info(f"Successfully parsed and validated LLM plan with {len(plan_data.get('pipeline', []))} steps")
-                return plan_data
-                
-            except (json.JSONDecodeError, ValueError) as e:
-                self.logger.debug(f"Failed to parse LLM JSON response: {e}")
-                raise  # Re-raise to be caught by create_plan
-        else:
-            self.logger.debug("LLM returned None, falling back")
+        if not llm_response:
             raise ValueError("LLM returned no response")
+
+        from json_fixer import parse_llm_json, validate_plan_json as _validate
+        plan_data = parse_llm_json(llm_response, ["query", "reasoning", "pipeline", "final_output"])
+
+        if not _validate(plan_data):
+            plan_data = self._validate_and_enhance_plan(plan_data, user_query)
+
+        # Ensure qa_engine is always last
+        pipeline = plan_data.get("pipeline", [])
+        pipeline = [s for s in pipeline if s.get("tool") != "qa_engine"]
+        pipeline.append({
+            "tool":    "qa_engine",
+            "purpose": "Synthesize all gathered information into a comprehensive answer",
+            "input":   user_query,
+        })
+        plan_data["pipeline"] = pipeline
+
+        plan_data.update({
+            "created_at":      datetime.now().isoformat(),
+            "planner_version": "3.0.0-llm",
+            "available_tools": len(self.tools),
+            "estimated_steps": len(pipeline),
+            "llm_generated":   True,
+        })
+
+        self.logger.info("LLM plan created with %d steps: %s",
+                         len(pipeline),
+                         [s.get("tool") for s in pipeline])
+        return plan_data
 
     def _extract_json_from_response(self, response: str) -> str:
         """Extract JSON content from LLM response, handling various formats."""

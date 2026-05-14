@@ -52,20 +52,24 @@ const Chat = () => {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
+  // Guard: while a send is in flight, don't let the activeConvId effect reload messages
+  const isSendingRef = useRef(false)
+
   // Redirect to login if not authenticated
   useEffect(() => {
     if (!isLoading && !user) navigate('/login')
   }, [user, isLoading, navigate])
 
-  // Load conversations for this user
+  // Load conversations for this user on mount
   useEffect(() => {
     if (!user) return
-    const convs = convStore.getConversations(user.id)
-    setConversations(convs)
+    setConversations(convStore.getConversations(user.id))
   }, [user])
 
-  // When active conversation changes, load its messages
+  // When active conversation changes (user clicks sidebar), load its messages
+  // BUT skip if we're mid-send (isSendingRef) to avoid wiping optimistic messages
   useEffect(() => {
+    if (isSendingRef.current) return
     if (!user || !activeConvId) {
       setMessages([])
       setActiveTitle('New Chat')
@@ -97,16 +101,21 @@ const Chat = () => {
 
     const userMessage = createMessage('user', text || (file ? `Uploaded ${file.name}` : ''), { attachments })
 
+    // Mark as sending BEFORE any state changes so the effect guard is active
+    isSendingRef.current = true
+
     // Create conversation on first message
     let convId = activeConvId
     if (!convId) {
       const conv = convStore.createConversation(user.id, text || file?.name || 'New Chat')
       convId = conv.id
-      setActiveConvId(convId)
+      // Update title immediately
       setActiveTitle(conv.title)
+      // Set the active conv id — the useEffect will be blocked by isSendingRef
+      setActiveConvId(convId)
     }
 
-    // Optimistic UI
+    // Show user message immediately (optimistic)
     setMessages(prev => [...prev, userMessage])
     setIsTyping(true)
 
@@ -151,18 +160,22 @@ const Chat = () => {
         assistantMessage = createMessage('assistant', res.data.response, opts)
       }
 
-      setMessages(prev => [...prev, assistantMessage])
-
-      // Persist both messages to store
+      // Persist both messages to store BEFORE clearing the guard
       convStore.appendMessages(user.id, convId!, [userMessage, assistantMessage])
+
+      // Now safe to clear the guard and update UI
+      isSendingRef.current = false
+      setMessages(prev => [...prev, assistantMessage])
       refreshConversations()
+
     } catch (error) {
       const detail = axios.isAxiosError(error)
         ? error.response?.data?.detail || error.message
         : 'Unexpected error occurred.'
       const errMsg = createMessage('assistant', `Sorry, I ran into an issue: ${detail}`, { status: 'error' })
-      setMessages(prev => [...prev, errMsg])
       convStore.appendMessages(user.id, convId!, [userMessage, errMsg])
+      isSendingRef.current = false
+      setMessages(prev => [...prev, errMsg])
       addToast('error', `Request failed: ${detail}`)
       refreshConversations()
     } finally {
@@ -171,15 +184,18 @@ const Chat = () => {
   }, [user, activeConvId, client, addToast, refreshConversations])
 
   const handleNewChat = useCallback(() => {
+    isSendingRef.current = false
     setActiveConvId(null)
     setMessages([])
     setActiveTitle('New Chat')
   }, [])
 
   const handleSelectConversation = useCallback((id: string) => {
+    if (isTyping) return          // don't switch mid-response
+    isSendingRef.current = false  // allow the effect to load messages
     setActiveConvId(id)
     setMobileSidebarOpen(false)
-  }, [])
+  }, [isTyping])
 
   const handleDeleteConversation = useCallback((id: string) => {
     if (!user) return
@@ -255,7 +271,6 @@ const Chat = () => {
       />
 
       <div className="flex-1 flex flex-col relative z-10 w-full overflow-hidden">
-        {/* Header */}
         <header className="flex items-center justify-between px-4 md:px-6 py-3 glass border-b border-white/10 flex-shrink-0">
           <div className="flex items-center gap-3">
             <button

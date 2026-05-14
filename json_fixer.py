@@ -1,243 +1,173 @@
 """
-JSON Fixer Module
-Repairs common JSON formatting issues from LLM responses.
+JSON Fixer Module — DualMind v3
+Robust extraction and repair of JSON from LLM responses.
 """
 
 import json
 import re
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
-def fix_json_string(json_str: str) -> str:
-    """
-    Attempt to fix common JSON formatting issues.
-    
-    Args:
-        json_str: Potentially malformed JSON string
-        
-    Returns:
-        Fixed JSON string
-    """
-    if not json_str:
-        raise ValueError("Empty JSON string")
-    
-    # Strip whitespace
-    json_str = json_str.strip()
-    
-    # Remove common LLM prefixes/suffixes
-    json_str = re.sub(r'^(Here is|Here\'s|Sure|Certainly|Of course)[^\{]*', '', json_str, flags=re.IGNORECASE)
-    json_str = re.sub(r'(Let me know|Hope this helps|Please|Thank you)[^\}]*$', '', json_str, flags=re.IGNORECASE)
-    json_str = json_str.strip()
-    
-    # Remove markdown code blocks
-    json_str = re.sub(r'^```(?:json)?\s*\n?', '', json_str)
-    json_str = re.sub(r'\n?```\s*$', '', json_str)
-    json_str = json_str.strip()
-    
-    # Fix common issues
-    
-    # 1. Fix trailing commas in objects/arrays
-    json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
-    
-    # 2. Fix missing commas between array/object elements
-    json_str = re.sub(r'(\}|\])\s*(\{|\[)', r'\1,\2', json_str)
-    json_str = re.sub(r'("\w+"\s*:\s*"[^"]*")\s+(")', r'\1,\2', json_str)
-    
-    # 3. Fix single quotes to double quotes (for keys and string values)
-    # Be careful not to replace quotes inside strings
-    json_str = re.sub(r"(?<!\\)'([^']*)'(?=\s*:)", r'"\1"', json_str)  # Keys
-    json_str = re.sub(r":\s*'([^']*)'", r': "\1"', json_str)  # Values
-    
-    # 4. Fix unquoted keys
-    json_str = re.sub(r'([{,]\s*)(\w+)(\s*:)', r'\1"\2"\3', json_str)
-    
-    # 5. Fix boolean values (ensure lowercase)
-    json_str = re.sub(r'\bTrue\b', 'true', json_str)
-    json_str = re.sub(r'\bFalse\b', 'false', json_str)
-    json_str = re.sub(r'\bNone\b', 'null', json_str)
-    
-    # 6. Fix escaped quotes that shouldn't be escaped
-    json_str = json_str.replace('\\"', '"')
-    
-    # 7. Ensure string values are properly quoted
-    # This is tricky and might need refinement
-    
-    return json_str
+# ── Core extraction ────────────────────────────────────────────────────────────
 
-
-def extract_and_fix_json(response: str) -> str:
+def extract_json_str(text: str) -> str:
     """
-    Extract JSON from LLM response and fix common issues.
-    
-    Args:
-        response: LLM response text
-        
-    Returns:
-        Fixed JSON string
-        
-    Raises:
-        ValueError: If no valid JSON can be extracted
+    Extract the first valid JSON object from any LLM response text.
+    Handles: leading spaces, markdown fences, prose before/after JSON.
     """
-    if not response:
+    if not text:
         raise ValueError("Empty response")
-    
-    # First, try to fix the entire response
+
+    text = text.strip()
+
+    # 1. Direct parse (model returned clean JSON)
     try:
-        fixed = fix_json_string(response)
-        json.loads(fixed)  # Validate
-        return fixed
-    except (json.JSONDecodeError, ValueError):
+        json.loads(text)
+        return text
+    except json.JSONDecodeError:
         pass
-    
-    # Try to find JSON between curly braces
-    first_brace = response.find('{')
-    last_brace = response.rfind('}')
-    
-    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-        potential_json = response[first_brace:last_brace + 1]
+
+    # 2. Strip markdown code fences  ```json ... ``` or ``` ... ```
+    fenced = re.sub(r'^```(?:json)?\s*\n?', '', text, flags=re.IGNORECASE)
+    fenced = re.sub(r'\n?```\s*$', '', fenced).strip()
+    try:
+        json.loads(fenced)
+        return fenced
+    except json.JSONDecodeError:
+        pass
+
+    # 3. Brace-counting extraction (most reliable for embedded JSON)
+    start = text.find('{')
+    if start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            c = text[i]
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:i + 1]
+                    try:
+                        json.loads(candidate)
+                        return candidate
+                    except json.JSONDecodeError:
+                        # Try fixing common issues then retry
+                        fixed = _repair(candidate)
+                        try:
+                            json.loads(fixed)
+                            return fixed
+                        except json.JSONDecodeError:
+                            break
+
+    # 4. Greedy regex fallback
+    m = re.search(r'\{.*\}', text, re.DOTALL)
+    if m:
+        candidate = m.group(0)
         try:
-            fixed = fix_json_string(potential_json)
-            json.loads(fixed)  # Validate
-            return fixed
-        except (json.JSONDecodeError, ValueError):
-            pass
-    
-    # Try to extract balanced braces
-    if '{' in response:
-        brace_count = 0
-        start_idx = response.find('{')
-        end_idx = start_idx
-        
-        for i in range(start_idx, len(response)):
-            if response[i] == '{':
-                brace_count += 1
-            elif response[i] == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    end_idx = i + 1
-                    break
-        
-        if end_idx > start_idx:
-            potential_json = response[start_idx:end_idx]
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            fixed = _repair(candidate)
             try:
-                fixed = fix_json_string(potential_json)
-                json.loads(fixed)  # Validate
+                json.loads(fixed)
                 return fixed
-            except (json.JSONDecodeError, ValueError):
+            except json.JSONDecodeError:
                 pass
-    
-    # If all else fails, raise error with sample
-    sample = response[:200] if len(response) > 200 else response
+
+    sample = text[:300]
     raise ValueError(f"Could not extract valid JSON. Sample: {sample}...")
 
 
-def parse_llm_json(response: str, expected_keys: list = None) -> Dict[str, Any]:
+def _repair(s: str) -> str:
+    """Apply common JSON repairs."""
+    # Trailing commas before } or ]
+    s = re.sub(r',(\s*[}\]])', r'\1', s)
+    # Python booleans / None
+    s = re.sub(r'\bTrue\b',  'true',  s)
+    s = re.sub(r'\bFalse\b', 'false', s)
+    s = re.sub(r'\bNone\b',  'null',  s)
+    # Single-quoted keys/values
+    s = re.sub(r"(?<![\\])'([^']*)'(\s*:)", r'"\1"\2', s)
+    s = re.sub(r":\s*'([^']*)'", r': "\1"', s)
+    # Unquoted keys
+    s = re.sub(r'([{,]\s*)([A-Za-z_]\w*)(\s*:)', r'\1"\2"\3', s)
+    return s
+
+
+# ── Public API ─────────────────────────────────────────────────────────────────
+
+def parse_llm_json(response: str, expected_keys: List[str] = None) -> Dict[str, Any]:
     """
-    Parse JSON from LLM response with validation and fixing.
-    
-    Args:
-        response: LLM response text
-        expected_keys: Optional list of keys that must be present
-        
-    Returns:
-        Parsed JSON as dictionary
-        
-    Raises:
-        ValueError: If JSON cannot be parsed or validated
+    Parse JSON from an LLM response, filling in defaults for missing keys.
+    Never raises on missing keys — always returns a usable dict.
     """
-    # Extract and fix JSON
-    json_str = extract_and_fix_json(response)
-    
-    # Parse
+    json_str = extract_json_str(response)
+
     try:
         data = json.loads(json_str)
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON even after fixes: {e}")
-        logger.debug(f"JSON string was: {json_str[:500]}")
-        raise ValueError(f"Invalid JSON after fixes: {e}")
-    
-    # Validate expected keys
+        logger.error("JSON parse failed after extraction: %s", e)
+        raise ValueError(f"Invalid JSON: {e}")
+
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected JSON object, got {type(data).__name__}")
+
+    # Fill defaults for any missing expected keys
     if expected_keys:
-        missing_keys = [key for key in expected_keys if key not in data]
-        if missing_keys:
-            logger.warning(f"Missing expected keys: {missing_keys}")
-            # Add default values for missing keys
-            defaults = {
-                "query": "",
-                "reasoning": "No reasoning provided",
-                "pipeline": [],
-                "final_output": "No output specified",
-                "overall_approval": False,
-                "score": 50,
-                "issues": [],
-                "suggestions": [],
-                "improvements": []
-            }
-            for key in missing_keys:
-                if key in defaults:
-                    data[key] = defaults[key]
-                    logger.info(f"Added default value for missing key: {key}")
-    
+        defaults: Dict[str, Any] = {
+            "query":            "",
+            "reasoning":        "No reasoning provided",
+            "pipeline":         [],
+            "final_output":     "No output specified",
+            "overall_approval": False,
+            "score":            50,
+            "issues":           [],
+            "suggestions":      [],
+            "improvements":     [],
+            "reasoning":        "No reasoning provided",
+        }
+        for key in expected_keys:
+            if key not in data:
+                data[key] = defaults.get(key, "")
+                logger.debug("Added default for missing key: %s", key)
+
     return data
 
 
+# ── Validators ─────────────────────────────────────────────────────────────────
+
 def validate_plan_json(data: Dict[str, Any]) -> bool:
-    """
-    Validate that a plan JSON has the correct structure.
-    
-    Args:
-        data: Parsed JSON data
-        
-    Returns:
-        True if valid, False otherwise
-    """
-    required_keys = ["query", "reasoning", "pipeline", "final_output"]
-    
-    # Check required keys
-    if not all(key in data for key in required_keys):
+    if not all(k in data for k in ("query", "reasoning", "pipeline", "final_output")):
         return False
-    
-    # Validate pipeline structure
-    pipeline = data.get("pipeline", [])
-    if not isinstance(pipeline, list):
+    if not isinstance(data.get("pipeline"), list):
         return False
-    
-    for step in pipeline:
+    for step in data["pipeline"]:
         if not isinstance(step, dict):
             return False
-        if not all(key in step for key in ["tool", "purpose", "input"]):
+        if "tool" not in step:
             return False
-    
     return True
 
 
 def validate_verification_json(data: Dict[str, Any]) -> bool:
-    """
-    Validate that a verification JSON has the correct structure.
-    
-    Args:
-        data: Parsed JSON data
-        
-    Returns:
-        True if valid, False otherwise
-    """
-    required_keys = ["overall_approval", "score", "issues", "suggestions", "improvements"]
-    
-    # Check required keys
-    if not all(key in data for key in required_keys):
+    required = ("overall_approval", "score", "issues", "suggestions", "improvements")
+    if not all(k in data for k in required):
         return False
-    
-    # Validate types
-    if not isinstance(data["overall_approval"], bool):
+    if not isinstance(data.get("overall_approval"), bool):
         return False
-    
-    if not isinstance(data["score"], (int, float)):
+    if not isinstance(data.get("score"), (int, float)):
         return False
-    
-    if not all(isinstance(data[key], list) for key in ["issues", "suggestions", "improvements"]):
-        return False
-    
     return True
+
+
+# Keep old name for backward compat
+def fix_json_string(s: str) -> str:
+    return _repair(s)
+
+
+def extract_and_fix_json(response: str) -> str:
+    return extract_json_str(response)

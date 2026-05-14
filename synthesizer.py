@@ -1,313 +1,219 @@
 """
-Answer Synthesizer Module
-Combines outputs from multiple tools into a coherent, human-readable answer.
+Answer Synthesizer — DualMind v4
+Produces a rich, fully-populated response with all sections filled.
 """
 
-import logging
 import json
-from typing import Dict, Any, List
+import logging
+import re
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
 
-def synthesize_answer(user_query: str, execution_results: List[Dict[str, Any]], plan: Dict[str, Any]) -> str:
-    """
-    Synthesize a comprehensive answer from multiple tool outputs.
-    
-    Args:
-        user_query: The original user query
-        execution_results: Results from tool executions
-        plan: The execution plan
-        
-    Returns:
-        Synthesized answer as a formatted string
-    """
-    
-    # Helper to normalize any tool output to a string
-    def _to_text(val: Any) -> str:
-        if isinstance(val, str):
-            return val
-        try:
-            if isinstance(val, (dict, list)):
-                return json.dumps(val, ensure_ascii=False)
-            return str(val)
-        except Exception:
-            return ""
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
-    # Collect all successful outputs
-    outputs = {}
-    for result in execution_results:
-        if result.get('status') == 'success':
-            tool_name = result.get('tool', 'unknown')
-            raw_output = result.get('output', '')
-            output = _to_text(raw_output)
-            if output and not output.startswith('Error:'):
-                outputs[tool_name] = output
-    
-    if not outputs:
-        return "❌ **No results were generated.** The query could not be processed successfully."
-    
-    # Build the synthesized answer
-    answer = f"# 📖 Answer to: {user_query}\n\n"
-    
-    # Strategy 1: If QA engine was used, make it the PRIMARY response
-    if 'qa_engine' in outputs:
-        qa_answer = outputs['qa_engine']
-        
-        # Check if it's a substantial answer (not just fallback)
-        if len(qa_answer) > 300 and not qa_answer.startswith("I'm sorry"):
-            # QA engine provided comprehensive answer - make it THE answer
-            answer += qa_answer + "\n\n"
-            answer += "---\n\n"
-            
-            # Show factual sources PROMINENTLY for verification
-            answer += "## 📚 Factual Sources Used (Verify Claims Above)\n\n"
-            answer += "*The AI answer above is grounded in the following factual sources. Cross-reference to verify accuracy:*\n\n"
-            
-            has_sources = False
-            
-            # Show ArXiv papers prominently - these are REAL research
-            if 'arxiv_summarizer' in outputs and len(outputs['arxiv_summarizer']) > 50:
-                answer += "### 🔬 Academic Papers Found\n\n"
-                answer += outputs['arxiv_summarizer'] + "\n\n"
-                has_sources = True
-            
-            # Show Wikipedia for background verification
-            if 'wikipedia_search' in outputs and len(outputs['wikipedia_search']) > 50:
-                answer += "### 📖 Wikipedia Background\n\n"
-                # Show first 800 chars prominently, rest in details
-                wiki_text = outputs['wikipedia_search']
-                if len(wiki_text) > 800:
-                    answer += wiki_text[:800] + "...\n\n"
-                    answer += f"<details><summary>Show full Wikipedia content</summary>\n\n{wiki_text}\n\n</details>\n\n"
-                else:
-                    answer += wiki_text + "\n\n"
-                has_sources = True
-            
-            # Show news articles for current context
-            if 'news_fetcher' in outputs and len(outputs['news_fetcher']) > 50:
-                answer += "### 📰 Recent News Articles\n\n"
-                answer += outputs['news_fetcher'] + "\n\n"
-                has_sources = True
-            
-            if not has_sources:
-                answer += "*Note: This answer is based on the LLM's general knowledge. No specific research papers or news articles were retrieved for verification.*\n\n"
-            
-            # Skip the rest of synthesis - qa_engine IS the answer
-            # Track generated files
-            files_generated = []
-            for result in execution_results:
-                output = _to_text(result.get('output', ''))
-                if 'successfully created' in output.lower() or 'generated' in output.lower():
-                    if '.png' in output or 'Chart' in output:
-                        files_generated.append(('chart', output))
-                    elif '.pdf' in output or 'PDF' in output:
-                        files_generated.append(('pdf', output))
-            
-            if files_generated:
-                answer += "## 📊 Generated Resources\n\n"
-                for file_type, file_info in files_generated:
-                    if file_type == 'chart':
-                        answer += f"📈 {file_info}\n"
-                    else:
-                        answer += f"📄 {file_info}\n"
-                answer += "\n"
-            
-            answer += "---\n\n"
-            answer += "✅ **Analysis Complete** | Comprehensive answer generated using AI with supporting research from multiple sources.\n"
-            
-            return answer
-        else:
-            # Fallback answer, continue with normal synthesis
-            answer += "## 💡 Quick Answer\n\n"
-            answer += f"{qa_answer}\n\n"
-            answer += "---\n\n"
-    
-    # Strategy 2: Synthesize from available information (if no comprehensive QA answer)
-    has_content = False
-    
-    # Wikipedia provides background
-    if 'wikipedia_search' in outputs:
-        wiki_output = outputs['wikipedia_search']
-        if len(wiki_output) > 50:
-            answer += "## 📚 Background\n\n"
-            # Show full Wikipedia output
-            answer += wiki_output + "\n\n"
-            has_content = True
-    
-    # ArXiv provides research context
-    if 'arxiv_summarizer' in outputs:
-        arxiv_output = outputs['arxiv_summarizer']
-        if 'Found' in arxiv_output and 'papers' in arxiv_output:
-            # Synthesize instead of showing raw list
-            answer += "## 🔬 Academic Research\n\n"
-            answer += _synthesize_arxiv_papers(user_query, arxiv_output)
-            answer += "\n\n"
-            has_content = True
-    
-    # News provides current developments
-    if 'news_fetcher' in outputs:
-        news_output = outputs['news_fetcher']
-        if len(news_output) > 50:
-            answer += "## 📰 Recent Developments\n\n"
-            answer += _synthesize_news(user_query, news_output)
-            answer += "\n\n"
-            has_content = True
-    
-    # Sentiment analysis
-    if 'sentiment_analyzer' in outputs:
-        sentiment_output = outputs['sentiment_analyzer']
-        if len(sentiment_output) > 20:
-            answer += "## 💭 Sentiment Analysis\n\n"
-            answer += sentiment_output + "\n\n"
-            has_content = True
-    
-    # Track generated files
-    files_generated = []
-    for result in execution_results:
-        output = _to_text(result.get('output', ''))
-        if 'successfully created' in output.lower() or 'generated' in output.lower():
-            if '.png' in output or 'Chart' in output:
-                files_generated.append(('chart', output))
-            elif '.pdf' in output or 'PDF' in output:
-                files_generated.append(('pdf', output))
-    
-    # Add final synthesis
-    if has_content:
-        answer += "## 🎯 Key Insights\n\n"
-        answer += _generate_key_insights(user_query, outputs)
-        answer += "\n\n"
-    
-    # Add generated files
-    if files_generated:
-        answer += "## 📊 Generated Resources\n\n"
-        for file_type, file_info in files_generated:
-            if file_type == 'chart':
-                answer += f"📈 {file_info}\n"
-            else:
-                answer += f"📄 {file_info}\n"
-        answer += "\n"
-    
-    # Footer
-    answer += "---\n\n"
-    answer += "✅ **Analysis Complete** | Information gathered from multiple sources and synthesized for your query.\n"
-    
-    return answer
+def _to_text(val: Any) -> str:
+    if isinstance(val, str):
+        return val.strip()
+    try:
+        return json.dumps(val, ensure_ascii=False, indent=2)
+    except Exception:
+        return str(val).strip()
 
 
-def _synthesize_arxiv_papers(query: str, arxiv_output: str) -> str:
-    """Synthesize ArXiv paper information into a coherent summary."""
-    
-    # Check if it's mock data
-    if 'Sample Paper' in arxiv_output:
-        return f"""Based on the academic research related to **"{query}"**, several important papers have been published:
-
-**Research Themes:**
-- The field shows active research with multiple recent publications
-- Key areas of focus include theoretical foundations and practical applications
-- Current work explores novel approaches and methodologies
-
-**Note:** This is a demonstration of the ArXiv integration. In a live system with a valid ArXiv API connection, you would see actual paper titles, authors, abstracts, and publication details from the research database.
-
-To access real academic papers, ensure:
-1. Internet connectivity is available
-2. The ArXiv API is accessible
-3. Your query matches indexed research topics"""
-    
-    # Parse and summarize real papers
-    lines = arxiv_output.split('\n')
-    paper_count = 0
-    summary = f"Found relevant academic research on **{query}**:\n\n"
-    
-    for line in lines:
-        if line.strip().startswith('**'):
-            paper_count += 1
-            summary += f"- {line.strip()}\n"
-    
-    return summary
+def _collect(execution_results: List[Dict[str, Any]]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for r in execution_results:
+        if r.get("status") != "success":
+            continue
+        name = r.get("tool", "unknown")
+        text = _to_text(r.get("output", ""))
+        if text and not text.lower().startswith("error"):
+            out[name] = text
+    return out
 
 
-def _synthesize_news(query: str, news_output: str) -> str:
-    """Synthesize news articles into a coherent summary."""
-    
-    if 'No recent news' in news_output or len(news_output) < 100:
-        return f"No recent news articles were found specifically about {query}. This could mean:\n- The topic is highly specialized\n- No major news coverage in recent days\n- Try a broader search term for more results"
-    
-    # Extract key points from news
-    lines = news_output.split('\n')
-    article_count = 0
-    summary = f"Recent news coverage on **{query}**:\n\n"
-    
-    for line in lines:
-        if '**Article' in line or '**Title' in line:
-            article_count += 1
-            summary += f"- {line.strip()}\n"
-    
-    return summary
+def _collect_files(execution_results: List[Dict[str, Any]]) -> List[tuple]:
+    files = []
+    for r in execution_results:
+        text = _to_text(r.get("output", ""))
+        low = text.lower()
+        if "successfully created" in low or "generated" in low:
+            if ".png" in low or "chart" in low:
+                files.append(("chart", text))
+            elif ".pdf" in low or "pdf" in low:
+                files.append(("pdf", text))
+    return files
 
 
-def _generate_key_insights(query: str, outputs: Dict[str, str]) -> str:
-    """Generate key insights from all gathered information."""
-    
-    insights = []
-    
-    # Analyze what information we have
-    if 'wikipedia_search' in outputs:
-        insights.append(f"✓ **Foundational knowledge** about {query} has been retrieved from Wikipedia")
-    
-    if 'arxiv_summarizer' in outputs:
-        insights.append("✓ **Academic research papers** have been identified and summarized")
-    
-    if 'news_fetcher' in outputs:
-        insights.append("✓ **Current news** and recent developments have been analyzed")
-    
-    if 'sentiment_analyzer' in outputs:
-        insights.append("✓ **Sentiment analysis** provides insights into public perception")
-    
-    if 'qa_engine' in outputs:
-        insights.append("✓ **Direct answer** has been generated based on available knowledge")
-    
-    if not insights:
-        return f"Based on the available information, here's what we know about **{query}**: The system has gathered relevant data from multiple sources to provide you with a comprehensive overview."
-    
-    result = "**Information Sources:**\n"
-    result += "\n".join(insights)
-    result += f"\n\nThis comprehensive analysis of **{query}** combines information from multiple authoritative sources to give you a complete picture."
-    
+# ── Section formatters ─────────────────────────────────────────────────────────
+
+def _fmt_arxiv(query: str, raw: str) -> str:
+    if not raw or len(raw) < 30:
+        return f"*No academic papers could be retrieved for **{query}** at this time.*"
+    lines = raw.strip().split("\n")
+    count = sum(1 for l in lines if re.match(r"^\d+\.", l.strip()))
+    result = raw.strip()
+    if count > 0:
+        result += f"\n\n> 📌 **{count} paper(s)** retrieved from arXiv."
     return result
 
 
+def _fmt_news(query: str, raw: str) -> str:
+    if not raw or len(raw) < 20:
+        return f"*No recent news articles found for **{query}**.*"
+
+    # Try JSON dict (news_fetcher returns dict serialised as JSON)
+    try:
+        data = json.loads(raw)
+        articles = data.get("data", [])
+        if not articles:
+            return f"*No recent news articles found for **{query}**.*"
+        result = ""
+        for i, art in enumerate(articles, 1):
+            title  = art.get("title", "Untitled")
+            source = art.get("source", "Unknown")
+            desc   = (art.get("description") or art.get("content") or "")[:220]
+            url    = art.get("url", "")
+            pub    = (art.get("published_at") or "")[:10]
+            result += f"**{i}. {title}**\n"
+            result += f"   📰 *{source}*"
+            if pub:
+                result += f" · {pub}"
+            result += "\n"
+            if desc:
+                result += f"   {desc}{'...' if len(desc) == 220 else ''}\n"
+            if url:
+                result += f"   🔗 [{url}]({url})\n"
+            result += "\n"
+        return result.strip()
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Already a formatted string
+    if len(raw) > 80:
+        return raw.strip()
+    return f"*No recent news articles found for **{query}**.*"
+
+
+def _fmt_wiki(raw: str) -> str:
+    return raw.strip() if raw and len(raw) > 30 else "*Wikipedia data unavailable.*"
+
+
+def _key_insights(query: str, outputs: Dict[str, str]) -> str:
+    bullets = []
+    if "wikipedia_search"  in outputs: bullets.append("✓ **Wikipedia** — encyclopedic background retrieved")
+    if "arxiv_summarizer"  in outputs: bullets.append("✓ **arXiv** — peer-reviewed academic papers found")
+    if "news_fetcher"      in outputs: bullets.append("✓ **News** — recent developments analysed")
+    if "semantic_scholar"  in outputs: bullets.append("✓ **Semantic Scholar** — citation data included")
+    if "pubmed_search"     in outputs: bullets.append("✓ **PubMed** — biomedical literature consulted")
+    if "sentiment_analyzer" in outputs: bullets.append("✓ **Sentiment** — public perception analysed")
+    if "qa_engine"         in outputs: bullets.append("✓ **AI Synthesis** — comprehensive answer generated")
+    if not bullets:
+        return f"Information about **{query}** gathered from available sources."
+    return "\n".join(bullets) + f"\n\n*{len(bullets)} source(s) consulted for this analysis.*"
+
+
+# ── Main synthesizer ───────────────────────────────────────────────────────────
+
+def synthesize_answer(
+    user_query: str,
+    execution_results: List[Dict[str, Any]],
+    plan: Dict[str, Any],
+) -> str:
+
+    outputs = _collect(execution_results)
+    files   = _collect_files(execution_results)
+
+    if not outputs:
+        return (
+            "❌ **No results were generated.**\n\n"
+            "The query could not be processed. Please check that the backend is running "
+            "and your API key is valid."
+        )
+
+    answer = f"# 📖 {user_query}\n\n"
+
+    # ── 1. Plain-text intro (always shown first) ───────────────────────────────
+    qa_text = outputs.get("qa_engine", "")
+    qa_is_real = (
+        len(qa_text) > 200
+        and "fallback response" not in qa_text.lower()
+        and "i'm sorry" not in qa_text.lower()
+        and "configure openrouter" not in qa_text.lower()
+    )
+
+    if qa_is_real:
+        # Show the AI answer as the primary readable response
+        answer += qa_text.strip() + "\n\n"
+        answer += "---\n\n"
+
+    # ── 2. Wikipedia ───────────────────────────────────────────────────────────
+    if "wikipedia_search" in outputs:
+        answer += "## 📖 Wikipedia Background\n\n"
+        answer += _fmt_wiki(outputs["wikipedia_search"]) + "\n\n"
+
+    # ── 3. Academic Research ───────────────────────────────────────────────────
+    if "arxiv_summarizer" in outputs:
+        answer += "## 🔬 Academic Research (arXiv)\n\n"
+        answer += _fmt_arxiv(user_query, outputs["arxiv_summarizer"]) + "\n\n"
+
+    if "semantic_scholar" in outputs:
+        answer += "## 🎓 Semantic Scholar\n\n"
+        answer += outputs["semantic_scholar"].strip() + "\n\n"
+
+    if "pubmed_search" in outputs:
+        answer += "## 🏥 PubMed Research\n\n"
+        answer += outputs["pubmed_search"].strip() + "\n\n"
+
+    # ── 4. Recent News ─────────────────────────────────────────────────────────
+    if "news_fetcher" in outputs:
+        answer += "## 📰 Recent News & Developments\n\n"
+        answer += _fmt_news(user_query, outputs["news_fetcher"]) + "\n\n"
+
+    # ── 5. Sentiment ───────────────────────────────────────────────────────────
+    if "sentiment_analyzer" in outputs:
+        answer += "## 💭 Sentiment Analysis\n\n"
+        answer += outputs["sentiment_analyzer"].strip() + "\n\n"
+
+    # ── 6. If no QA answer, show a fallback summary ────────────────────────────
+    if not qa_is_real and not any(
+        k in outputs for k in ("wikipedia_search", "arxiv_summarizer", "news_fetcher")
+    ):
+        answer += "## 💡 Summary\n\n"
+        answer += (
+            f"Your query **\"{user_query}\"** was processed. "
+            "The system gathered information from available sources. "
+            "For a more detailed AI-generated answer, ensure your OpenRouter API key is valid "
+            "and the model is accessible.\n\n"
+        )
+
+    # ── 7. Key Insights ────────────────────────────────────────────────────────
+    answer += "## 🎯 Key Insights\n\n"
+    answer += _key_insights(user_query, outputs) + "\n\n"
+
+    # ── 8. Generated files ─────────────────────────────────────────────────────
+    if files:
+        answer += "## 📊 Generated Resources\n\n"
+        for ftype, finfo in files:
+            icon = "📈" if ftype == "chart" else "📄"
+            answer += f"{icon} {finfo.strip()}\n"
+        answer += "\n"
+
+    answer += "---\n\n"
+    answer += "✅ **Analysis Complete** — synthesised from multiple sources.\n"
+    return answer
+
+
 def create_executive_summary(user_query: str, execution_results: List[Dict[str, Any]]) -> str:
-    """
-    Create a brief executive summary (2-3 sentences) of the answer.
-    
-    Args:
-        user_query: The original user query
-        execution_results: Results from tool executions
-        
-    Returns:
-        Brief executive summary
-    """
-    
-    successful_tools = [r.get('tool', '') for r in execution_results if r.get('status') == 'success']
-    
-    if not successful_tools:
+    tools = [r.get("tool", "") for r in execution_results if r.get("status") == "success"]
+    if not tools:
         return "No results could be generated for this query."
-    
-    summary = f"Regarding **{user_query}**: "
-    
-    if 'qa_engine' in successful_tools:
-        summary += "A direct answer has been provided based on available knowledge. "
-    
-    if 'wikipedia_search' in successful_tools:
-        summary += "Background information has been retrieved from Wikipedia. "
-    
-    if 'arxiv_summarizer' in successful_tools:
-        summary += "Academic research papers have been identified and summarized. "
-    
-    if 'news_fetcher' in successful_tools:
-        summary += "Recent news articles have been analyzed. "
-    
-    summary += f"Total of {len(successful_tools)} information sources consulted."
-    
-    return summary
+    parts = [f"Regarding **{user_query}**:"]
+    if "qa_engine"        in tools: parts.append("AI-generated answer provided.")
+    if "wikipedia_search" in tools: parts.append("Wikipedia background retrieved.")
+    if "arxiv_summarizer" in tools: parts.append("Academic papers identified.")
+    if "news_fetcher"     in tools: parts.append("Recent news analysed.")
+    parts.append(f"Total: {len(tools)} source(s) consulted.")
+    return " ".join(parts)

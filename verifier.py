@@ -92,116 +92,66 @@ class Verifier:
             return self._rule_based_verify_plan(plan)
 
     def _llm_verify_plan(self, plan: Dict[str, Any]) -> Dict[str, Any]:
-        """Use LLM for intelligent plan verification."""
-        
-        # Prepare the system prompt for verification
-        system_prompt = """You are a JSON-only response bot. You MUST respond with ONLY valid JSON. No other text is allowed.
+        """Use LLM for intelligent plan verification with a simple, reliable prompt."""
 
-Available tools:
-{tools_description}
+        tools_list = "\n".join(
+            f"- {t.get('name','?')}: {t.get('description','')}"
+            for t in self.tools
+        )
 
-⚠️ CRITICAL INSTRUCTIONS - FOLLOW EXACTLY:
-1. Your response MUST start with {{ and end with }}
-2. DO NOT write ANY text before the {{
-3. DO NOT write ANY text after the }}
-4. DO NOT use markdown code blocks (```)
-5. DO NOT include explanations or comments
-6. ONLY output valid, parseable JSON
+        system_prompt = (
+            "You are a plan verifier. Respond with ONLY a JSON object — no prose, no markdown fences.\n\n"
+            f"Available tools:\n{tools_list}\n\n"
+            "Output format (strict JSON):\n"
+            '{"overall_approval":true,"score":85,"issues":[],'
+            '"suggestions":["..."],"improvements":[],"reasoning":"..."}\n\n'
+            "Scoring guide: 80-100=approve, 60-79=approve with suggestions, <60=reject.\n"
+            "Criteria: relevance 30%, efficiency 25%, completeness 25%, feasibility 20%."
+        )
 
-Required structure:
-{{
-    "overall_approval": true,
-    "score": 85,
-    "issues": ["list issues"],
-    "suggestions": ["list suggestions"],
-    "improvements": ["list improvements"],
-    "reasoning": "verification reasoning"
-}}
+        plan_summary = json.dumps({
+            "query":    plan.get("query", ""),
+            "pipeline": [{"tool": s.get("tool"), "purpose": s.get("purpose")}
+                         for s in plan.get("pipeline", [])],
+        })
 
-Scoring (0-100):
-- 80-100: Excellent (approve)
-- 60-79: Good (approve with suggestions)
-- 40-59: Fair (needs revision)
-- 0-39: Poor (reject)
-
-Criteria:
-- Relevance 30%: Do tools match query?
-- Efficiency 25%: Is sequence logical?
-- Completeness 25%: Covers all aspects?
-- Feasibility 20%: Are tools available?
-
-Note: Empty arrays are valid: "issues": []
-
-IMPORTANT: Your ENTIRE response must be valid JSON. Start typing {{ immediately."""
-
-        # Format the plan for the prompt
-        plan_json = json.dumps(plan, indent=2)
-        
-        # Format available tools for the prompt
-        tools_description = ""
-        for tool in self.tools:
-            tools_description += f"- {tool.get('name', 'Unknown')}: {tool.get('description', 'No description')}\n"
-
-        prompt = f"Please verify this task plan:\n\n{plan_json}\n\nProvide detailed verification feedback:"
+        prompt = f"Verify this task plan:\n{plan_summary}"
 
         llm_response = self.llm_client.call_llm(
             prompt=prompt,
-            system_prompt=system_prompt.format(tools_description=tools_description),
-            max_tokens=2000
+            system_prompt=system_prompt,
+            max_tokens=800,
         )
 
-        if llm_response:
-            try:
-                # Use robust JSON parser with automatic fixing when available
-                if parse_llm_json:
-                    expected_keys = ["overall_approval", "score", "issues", "suggestions", "improvements"]
-                    verification_data = parse_llm_json(llm_response, expected_keys)
-
-                    if validate_verification_json and not validate_verification_json(verification_data):
-                        self.logger.warning("LLM verification failed validation, normalising defaults")
-                        verification_data.setdefault("overall_approval", False)
-                        verification_data.setdefault("score", 50)
-                        verification_data.setdefault("issues", [])
-                        verification_data.setdefault("suggestions", [])
-                        verification_data.setdefault("improvements", [])
-                else:
-                    clean_response = self._extract_json_from_response(llm_response)
-                    verification_data = json.loads(clean_response)
-            except ValueError as exc:
-                self.logger.warning(
-                    "LLM verification response missing expected keys (%s); applying permissive fallback",
-                    exc,
-                )
-                clean_response = self._extract_json_from_response(llm_response)
-                verification_data = json.loads(clean_response)
-            except json.JSONDecodeError as exc:
-                self.logger.debug(f"Failed to parse LLM verification JSON: {exc}")
-                raise
-
-            # Ensure all required fields exist with sensible defaults
-            verification_data.setdefault("overall_approval", False)
-            verification_data.setdefault("score", 50)
-            verification_data.setdefault("issues", [])
-            verification_data.setdefault("suggestions", [])
-            verification_data.setdefault("improvements", [])
-            verification_data.setdefault("reasoning", "LLM-generated verification")
-
-            # Add metadata before returning
-            verification_data.update({
-                "plan_id": f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                "verified_at": datetime.now().isoformat(),
-                "verification_method": "llm",
-                "tools_available": len(self.tools)
-            })
-
-            self.logger.info(
-                "Successfully parsed LLM verification (score: %s)",
-                verification_data.get("score", 0),
-            )
-            return verification_data
-        else:
-            self.logger.debug("LLM returned None, falling back")
+        if not llm_response:
             raise ValueError("LLM returned no response")
+
+        from json_fixer import parse_llm_json, validate_verification_json as _validate
+        vdata = parse_llm_json(
+            llm_response,
+            ["overall_approval", "score", "issues", "suggestions", "improvements"],
+        )
+
+        # Ensure correct types
+        if isinstance(vdata.get("overall_approval"), str):
+            vdata["overall_approval"] = vdata["overall_approval"].lower() == "true"
+        if isinstance(vdata.get("score"), str):
+            try:
+                vdata["score"] = int(vdata["score"])
+            except ValueError:
+                vdata["score"] = 70
+
+        vdata.setdefault("reasoning", "LLM-generated verification")
+        vdata.update({
+            "plan_id":           f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "verified_at":       datetime.now().isoformat(),
+            "verification_method": "llm",
+            "tools_available":   len(self.tools),
+        })
+
+        self.logger.info("LLM verification: score=%s approved=%s",
+                         vdata.get("score"), vdata.get("overall_approval"))
+        return vdata
 
     def _extract_json_from_response(self, response: str) -> str:
         """Extract JSON content from LLM response, handling various formats."""

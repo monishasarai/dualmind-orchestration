@@ -229,41 +229,56 @@ class LLMClient:
     # ------------------------------------------------------------------
 
     def _extract_json_from_response(self, text: str) -> str:
-        """Extract JSON from LLM response, handling various formats."""
+        """Extract JSON from LLM response, handling all common formats."""
         if not text:
             raise ValueError("Empty response from LLM")
 
-        # Try to find JSON object or array
-        json_match = re.search(
-            r'\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}|\[[^\]]*\]',
-            text,
-            re.DOTALL,
-        )
-        if json_match:
-            try:
-                json.loads(json_match.group(0))
-                return json_match.group(0)
-            except json.JSONDecodeError:
-                pass
+        # Strip leading/trailing whitespace (model often adds a leading space)
+        text = text.strip()
 
-        # Remove markdown code blocks
+        # 1. Try direct parse first (fastest path)
         try:
-            cleaned = re.sub(r'```(?:json)?\s*', '', text, flags=re.IGNORECASE)
-            cleaned = re.sub(r'```\s*$', '', cleaned)
+            json.loads(text)
+            return text
+        except json.JSONDecodeError:
+            pass
+
+        # 2. Strip markdown code fences
+        cleaned = re.sub(r'^```(?:json)?\s*\n?', '', text, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\n?```\s*$', '', cleaned).strip()
+        try:
             json.loads(cleaned)
             return cleaned
         except json.JSONDecodeError:
             pass
 
-        # Last resort
-        try:
-            match = re.search(r'\{.*\}', text, re.DOTALL)
-            if match:
-                return match.group(0)
-        except Exception:
-            pass
+        # 3. Find outermost { ... } using brace counting (most reliable)
+        start = text.find('{')
+        if start != -1:
+            depth = 0
+            for i in range(start, len(text)):
+                if text[i] == '{':
+                    depth += 1
+                elif text[i] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start:i + 1]
+                        try:
+                            json.loads(candidate)
+                            return candidate
+                        except json.JSONDecodeError:
+                            break
 
-        raise ValueError("Could not extract valid JSON from response")
+        # 4. Regex fallback
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            try:
+                json.loads(match.group(0))
+                return match.group(0)
+            except json.JSONDecodeError:
+                pass
+
+        raise ValueError(f"Could not extract valid JSON. Sample: {text[:200]}")
 
     # ------------------------------------------------------------------
     # Public interface
