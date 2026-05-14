@@ -27,6 +27,7 @@ export default {
           purple: '#B200FF',
           blue: '#00D4FF',
           green: '#39FF14',
+          cyan: '#00FFFF',
         },
         text: {
           primary: 'var(--text-primary)',

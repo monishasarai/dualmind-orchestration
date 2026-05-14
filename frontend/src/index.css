@@ -1,36 +1,36 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Poppins:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --bg-color: #f8f9fa;
-  --surface-color: rgba(255, 255, 255, 0.7);
-  --border-color: rgba(229, 231, 235, 0.8);
-  --text-primary: #111827;
-  --text-secondary: #4b5563;
-  --glass-bg: rgba(255, 255, 255, 0.6);
-  --glass-border: rgba(200, 200, 220, 0.4);
-  --glow-1: rgba(0, 212, 255, 0.08);
-  --glow-2: rgba(255, 0, 255, 0.06);
-  --glow-3: rgba(178, 0, 255, 0.06);
-  --hover-bg: rgba(0, 0, 0, 0.06);
+  --bg-color: #f0f2f5;
+  --surface-color: rgba(255, 255, 255, 0.75);
+  --border-color: rgba(209, 213, 219, 0.8);
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --glass-bg: rgba(255, 255, 255, 0.65);
+  --glass-border: rgba(200, 210, 230, 0.5);
+  --glow-1: rgba(0, 212, 255, 0.10);
+  --glow-2: rgba(255, 0, 255, 0.07);
+  --glow-3: rgba(178, 0, 255, 0.07);
+  --hover-bg: rgba(0, 0, 0, 0.05);
   color-scheme: light;
 }
 
 .dark {
-  --bg-color: #050505;
-  --surface-color: rgba(15, 15, 19, 0.7);
-  --border-color: rgba(26, 26, 36, 0.8);
-  --text-primary: #ffffff;
-  --text-secondary: #a1a1aa;
-  --glass-bg: rgba(15, 15, 19, 0.4);
-  --glass-border: rgba(255, 255, 255, 0.05);
-  --glow-1: rgba(0, 212, 255, 0.05);
+  --bg-color: #030305;
+  --surface-color: rgba(12, 12, 18, 0.75);
+  --border-color: rgba(30, 30, 45, 0.9);
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --glass-bg: rgba(12, 12, 18, 0.5);
+  --glass-border: rgba(255, 255, 255, 0.06);
+  --glow-1: rgba(0, 212, 255, 0.06);
   --glow-2: rgba(255, 0, 255, 0.05);
   --glow-3: rgba(178, 0, 255, 0.05);
-  --hover-bg: rgba(255, 255, 255, 0.1);
+  --hover-bg: rgba(255, 255, 255, 0.08);
   color-scheme: dark;
 }
 
@@ -47,7 +47,7 @@ html, body {
   overflow-x: hidden;
   letter-spacing: 0.01em;
   line-height: 1.6;
-  transition: background-color 0.5s ease, color 0.5s ease;
+  transition: background-color 0.4s ease, color 0.4s ease;
 }
 
 #root {
@@ -57,7 +57,7 @@ html, body {
   z-index: 1;
 }
 
-/* Futuristic Animated Background */
+/* ── Animated Background ── */
 .animated-bg {
   position: fixed;
   top: 0;
@@ -66,52 +66,107 @@ html, body {
   height: 100vh;
   z-index: -1;
   background-color: var(--bg-color);
-  background-image: radial-gradient(circle at 15% 50%, var(--glow-1), transparent 25%),
-              radial-gradient(circle at 85% 30%, var(--glow-2), transparent 25%),
-              radial-gradient(circle at 50% 80%, var(--glow-3), transparent 25%);
+  background-image:
+    radial-gradient(ellipse at 15% 50%, var(--glow-1), transparent 40%),
+    radial-gradient(ellipse at 85% 20%, var(--glow-2), transparent 40%),
+    radial-gradient(ellipse at 50% 85%, var(--glow-3), transparent 40%);
   background-size: 200% 200%;
-  animation: gradient-x 15s ease infinite;
-  transition: background-color 0.5s ease;
+  animation: gradient-x 18s ease infinite;
+  transition: background-color 0.4s ease;
 }
 
-/* Glassmorphism Utilities */
+/* ── Glassmorphism ── */
 .glass {
   background: var(--glass-bg);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--glass-border);
 }
 
 .glass-panel {
   background: var(--surface-color);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   border: 1px solid var(--border-color);
 }
 
-/* Clean scrollbar */
-.scrollbar-thin::-webkit-scrollbar {
-  width: 6px;
+/* ── Neon text gradient ── */
+.neon-text {
+  background: linear-gradient(135deg, #00D4FF 0%, #B200FF 50%, #FF00FF 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
-.scrollbar-thin::-webkit-scrollbar-track {
-  background: transparent;
-}
-
+/* ── Scrollbar ── */
+.scrollbar-thin::-webkit-scrollbar { width: 5px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background: rgba(0, 212, 255, 0.3);
+  background: rgba(0, 212, 255, 0.25);
   border-radius: 9999px;
 }
-
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 212, 255, 0.6);
+  background: rgba(0, 212, 255, 0.5);
 }
 
-@keyframes pulse {
-  0%, 100% {
-    opacity: 0.4;
-  }
-  50% {
-    opacity: 1;
-  }
+/* ── Prose custom dark ── */
+.prose-custom-dark {
+  color: var(--text-primary);
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+/* ── Keyframes ── */
+@keyframes gradient-x {
+  0%, 100% { background-position: 0% 50%; }
+  50%       { background-position: 100% 50%; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-12px); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.7; }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes typing-dot {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40%           { transform: scale(1);   opacity: 1; }
+}
+
+/* ── Skeleton loader ── */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--surface-color) 25%,
+    rgba(0, 212, 255, 0.08) 50%,
+    var(--surface-color) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s infinite;
+  border-radius: 0.5rem;
+}
+
+/* ── Typing dots ── */
+.typing-dot:nth-child(1) { animation: typing-dot 1.2s infinite 0s; }
+.typing-dot:nth-child(2) { animation: typing-dot 1.2s infinite 0.2s; }
+.typing-dot:nth-child(3) { animation: typing-dot 1.2s infinite 0.4s; }
+
+/* ── Section fade-in (used with IntersectionObserver) ── */
+.section-hidden {
+  opacity: 0;
+  transform: translateY(32px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.section-visible {
+  opacity: 1;
+  transform: translateY(0);
 }

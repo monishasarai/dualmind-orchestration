@@ -65,7 +65,46 @@ export interface Message {
   lightweightMode?: boolean
 }
 
-export interface ChatState {
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+export interface User {
+  id: string
+  email: string
+  displayName: string
+  avatarUrl?: string
+  createdAt: string
+  plan: 'free' | 'pro'
+}
+
+/** Stored in localStorage — password is hashed with a simple SHA-256 hex */
+export interface StoredUser extends User {
+  passwordHash: string
+}
+
+export interface AuthSession {
+  userId: string
+  token: string          // random session token
+  expiresAt: string      // ISO string
+  rememberMe: boolean
+}
+
+// ── Conversations ─────────────────────────────────────────────────────────────
+
+export interface Conversation {
+  id: string
+  userId: string
+  title: string
+  pinned: boolean
+  createdAt: string
+  updatedAt: string
   messages: Message[]
   sessionId?: string
+}
+
+// ── UI ────────────────────────────────────────────────────────────────────────
+
+export interface Toast {
+  id: string
+  type: 'success' | 'error' | 'warning' | 'info'
+  message: string
 }
