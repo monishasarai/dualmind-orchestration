@@ -1,12 +1,12 @@
 """
-Answer Synthesizer — DualMind v4
-Produces a rich, fully-populated response with all sections filled.
+Answer Synthesizer — DualMind v5
+Clean, deduplicated, well-structured response with all sections.
 """
 
 import json
 import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ def _to_text(val: Any) -> str:
 
 
 def _collect(execution_results: List[Dict[str, Any]]) -> Dict[str, str]:
+    """Collect successful tool outputs keyed by tool name."""
     out: Dict[str, str] = {}
     for r in execution_results:
         if r.get("status") != "success":
@@ -34,16 +35,56 @@ def _collect(execution_results: List[Dict[str, Any]]) -> Dict[str, str]:
     return out
 
 
-def _collect_files(execution_results: List[Dict[str, Any]]) -> List[tuple]:
+def _extract_file_refs(execution_results: List[Dict[str, Any]]) -> List[tuple]:
+    """
+    Extract ONLY the short file-path references from tool outputs.
+    Avoids pulling in the full document text as a 'file'.
+    Returns list of (type, short_description).
+    """
     files = []
+    seen = set()
+
     for r in execution_results:
+        if r.get("status") != "success":
+            continue
+        tool = r.get("tool", "")
         text = _to_text(r.get("output", ""))
-        low = text.lower()
-        if "successfully created" in low or "generated" in low:
-            if ".png" in low or "chart" in low:
-                files.append(("chart", text))
-            elif ".pdf" in low or "pdf" in low:
-                files.append(("pdf", text))
+
+        # Only look at data_plotter and document_writer outputs
+        if tool not in ("data_plotter", "document_writer"):
+            continue
+
+        # Extract chart file references  e.g. "output\bar_chart_3_...png"
+        chart_matches = re.findall(
+            r'(?:output[/\\][\w\-\.]+\.png|[\w\-]+\.png)',
+            text, re.IGNORECASE
+        )
+        for m in chart_matches:
+            if m not in seen:
+                seen.add(m)
+                files.append(("chart", f"Chart saved: `{m}`"))
+
+        # Extract PDF file references  e.g. "output\report_...pdf"
+        pdf_matches = re.findall(
+            r'(?:output[/\\][\w\-\.]+\.pdf|[\w\-]+\.pdf)',
+            text, re.IGNORECASE
+        )
+        for m in pdf_matches:
+            if m not in seen:
+                seen.add(m)
+                files.append(("pdf", f"PDF report saved: `{m}`"))
+
+        # If no file path found but tool says "successfully created"
+        if not chart_matches and not pdf_matches:
+            low = text.lower()
+            if "successfully created" in low or "chart" in low:
+                # Extract just the first line (the status line)
+                first_line = text.split("\n")[0].strip()
+                if len(first_line) < 200 and first_line not in seen:
+                    seen.add(first_line)
+                    ftype = "chart" if "chart" in low or ".png" in low else "pdf"
+                    files.append((ftype, first_line))
+
     return files
 
 
@@ -53,7 +94,7 @@ def _fmt_arxiv(query: str, raw: str) -> str:
     if not raw or len(raw) < 30:
         return f"*No academic papers could be retrieved for **{query}** at this time.*"
     lines = raw.strip().split("\n")
-    count = sum(1 for l in lines if re.match(r"^\d+\.", l.strip()))
+    count = sum(1 for ln in lines if re.match(r"^\d+\.", ln.strip()))
     result = raw.strip()
     if count > 0:
         result += f"\n\n> 📌 **{count} paper(s)** retrieved from arXiv."
@@ -64,7 +105,7 @@ def _fmt_news(query: str, raw: str) -> str:
     if not raw or len(raw) < 20:
         return f"*No recent news articles found for **{query}**.*"
 
-    # Try JSON dict (news_fetcher returns dict serialised as JSON)
+    # Try JSON dict (news_fetcher returns serialised dict)
     try:
         data = json.loads(raw)
         articles = data.get("data", [])
@@ -91,7 +132,6 @@ def _fmt_news(query: str, raw: str) -> str:
     except (json.JSONDecodeError, TypeError):
         pass
 
-    # Already a formatted string
     if len(raw) > 80:
         return raw.strip()
     return f"*No recent news articles found for **{query}**.*"
@@ -103,13 +143,15 @@ def _fmt_wiki(raw: str) -> str:
 
 def _key_insights(query: str, outputs: Dict[str, str]) -> str:
     bullets = []
-    if "wikipedia_search"  in outputs: bullets.append("✓ **Wikipedia** — encyclopedic background retrieved")
-    if "arxiv_summarizer"  in outputs: bullets.append("✓ **arXiv** — peer-reviewed academic papers found")
-    if "news_fetcher"      in outputs: bullets.append("✓ **News** — recent developments analysed")
-    if "semantic_scholar"  in outputs: bullets.append("✓ **Semantic Scholar** — citation data included")
-    if "pubmed_search"     in outputs: bullets.append("✓ **PubMed** — biomedical literature consulted")
+    if "wikipedia_search"   in outputs: bullets.append("✓ **Wikipedia** — encyclopedic background retrieved")
+    if "arxiv_summarizer"   in outputs: bullets.append("✓ **arXiv** — peer-reviewed academic papers found")
+    if "semantic_scholar"   in outputs: bullets.append("✓ **Semantic Scholar** — citation data included")
+    if "pubmed_search"      in outputs: bullets.append("✓ **PubMed** — biomedical literature consulted")
+    if "news_fetcher"       in outputs: bullets.append("✓ **News** — recent developments analysed")
     if "sentiment_analyzer" in outputs: bullets.append("✓ **Sentiment** — public perception analysed")
-    if "qa_engine"         in outputs: bullets.append("✓ **AI Synthesis** — comprehensive answer generated")
+    if "data_plotter"       in outputs: bullets.append("✓ **Data Plotter** — visual chart generated")
+    if "document_writer"    in outputs: bullets.append("✓ **Document Writer** — PDF report generated")
+    if "qa_engine"          in outputs: bullets.append("✓ **AI Synthesis** — comprehensive answer generated")
     if not bullets:
         return f"Information about **{query}** gathered from available sources."
     return "\n".join(bullets) + f"\n\n*{len(bullets)} source(s) consulted for this analysis.*"
@@ -124,7 +166,7 @@ def synthesize_answer(
 ) -> str:
 
     outputs = _collect(execution_results)
-    files   = _collect_files(execution_results)
+    files   = _extract_file_refs(execution_results)   # ← fixed: short refs only
 
     if not outputs:
         return (
@@ -133,9 +175,9 @@ def synthesize_answer(
             "and your API key is valid."
         )
 
-    answer = f"# 📖 {user_query}\n\n"
+    sections: List[str] = []
 
-    # ── 1. Plain-text intro (always shown first) ───────────────────────────────
+    # ── 1. AI-generated answer (primary, shown first) ──────────────────────────
     qa_text = outputs.get("qa_engine", "")
     qa_is_real = (
         len(qa_text) > 200
@@ -145,65 +187,63 @@ def synthesize_answer(
     )
 
     if qa_is_real:
-        # Show the AI answer as the primary readable response
-        answer += qa_text.strip() + "\n\n"
-        answer += "---\n\n"
+        sections.append(qa_text.strip())
+        sections.append("---")
 
     # ── 2. Wikipedia ───────────────────────────────────────────────────────────
     if "wikipedia_search" in outputs:
-        answer += "## 📖 Wikipedia Background\n\n"
-        answer += _fmt_wiki(outputs["wikipedia_search"]) + "\n\n"
+        sections.append("## 📖 Wikipedia Background\n\n" + _fmt_wiki(outputs["wikipedia_search"]))
 
     # ── 3. Academic Research ───────────────────────────────────────────────────
     if "arxiv_summarizer" in outputs:
-        answer += "## 🔬 Academic Research (arXiv)\n\n"
-        answer += _fmt_arxiv(user_query, outputs["arxiv_summarizer"]) + "\n\n"
+        sections.append("## 🔬 Academic Research (arXiv)\n\n" + _fmt_arxiv(user_query, outputs["arxiv_summarizer"]))
 
     if "semantic_scholar" in outputs:
-        answer += "## 🎓 Semantic Scholar\n\n"
-        answer += outputs["semantic_scholar"].strip() + "\n\n"
+        ss = outputs["semantic_scholar"].strip()
+        if "No papers found" not in ss:
+            sections.append("## 🎓 Semantic Scholar\n\n" + ss)
 
     if "pubmed_search" in outputs:
-        answer += "## 🏥 PubMed Research\n\n"
-        answer += outputs["pubmed_search"].strip() + "\n\n"
+        pm = outputs["pubmed_search"].strip()
+        if "No biomedical articles found" not in pm:
+            sections.append("## 🏥 PubMed Research\n\n" + pm)
 
     # ── 4. Recent News ─────────────────────────────────────────────────────────
     if "news_fetcher" in outputs:
-        answer += "## 📰 Recent News & Developments\n\n"
-        answer += _fmt_news(user_query, outputs["news_fetcher"]) + "\n\n"
+        sections.append("## 📰 Recent News & Developments\n\n" + _fmt_news(user_query, outputs["news_fetcher"]))
 
     # ── 5. Sentiment ───────────────────────────────────────────────────────────
     if "sentiment_analyzer" in outputs:
-        answer += "## 💭 Sentiment Analysis\n\n"
-        answer += outputs["sentiment_analyzer"].strip() + "\n\n"
+        sections.append("## 💭 Sentiment Analysis\n\n" + outputs["sentiment_analyzer"].strip())
 
-    # ── 6. If no QA answer, show a fallback summary ────────────────────────────
+    # ── 6. Fallback summary if nothing useful ─────────────────────────────────
     if not qa_is_real and not any(
         k in outputs for k in ("wikipedia_search", "arxiv_summarizer", "news_fetcher")
     ):
-        answer += "## 💡 Summary\n\n"
-        answer += (
+        sections.append(
+            "## 💡 Summary\n\n"
             f"Your query **\"{user_query}\"** was processed. "
             "The system gathered information from available sources. "
-            "For a more detailed AI-generated answer, ensure your OpenRouter API key is valid "
-            "and the model is accessible.\n\n"
+            "For a more detailed AI-generated answer, ensure your OpenRouter API key is valid."
         )
 
     # ── 7. Key Insights ────────────────────────────────────────────────────────
-    answer += "## 🎯 Key Insights\n\n"
-    answer += _key_insights(user_query, outputs) + "\n\n"
+    sections.append("## 🎯 Key Insights\n\n" + _key_insights(user_query, outputs))
 
-    # ── 8. Generated files ─────────────────────────────────────────────────────
+    # ── 8. Generated files (charts / PDFs) — short refs only ──────────────────
     if files:
-        answer += "## 📊 Generated Resources\n\n"
+        file_lines = []
         for ftype, finfo in files:
             icon = "📈" if ftype == "chart" else "📄"
-            answer += f"{icon} {finfo.strip()}\n"
-        answer += "\n"
+            file_lines.append(f"{icon} {finfo}")
+        sections.append("## 📊 Generated Resources\n\n" + "\n".join(file_lines))
 
-    answer += "---\n\n"
-    answer += "✅ **Analysis Complete** — synthesised from multiple sources.\n"
-    return answer
+    # ── Assemble ───────────────────────────────────────────────────────────────
+    header = f"# 📖 {user_query}\n"
+    body   = "\n\n".join(sections)
+    footer = "\n\n---\n\n✅ **Analysis Complete** — synthesised from multiple sources."
+
+    return header + "\n" + body + footer
 
 
 def create_executive_summary(user_query: str, execution_results: List[Dict[str, Any]]) -> str:
