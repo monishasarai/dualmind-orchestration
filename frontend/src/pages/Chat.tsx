@@ -3,10 +3,11 @@ import { Link } from 'react-router-dom'
 import axios from 'axios'
 import ChatInput from '../components/ChatInput'
 import ChatWindow from '../components/ChatWindow'
+import Sidebar from '../components/Sidebar'
 import type { ChatState, Message } from '../types'
 import { hasExecutionDetailsData } from '../utils/executionDetails'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || ''
 const STORAGE_KEY = 'dualmind_chat_state'
 
 interface MessageOptions
@@ -171,33 +172,18 @@ const Chat = () => {
   }
 
   return (
-    <div className="min-h-screen bg-dark-bg flex flex-col">
-      {/* Header */}
-      <header className="sticky top-0 z-30 bg-dark-bg border-b border-dark-border">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Link
-            to="/"
-            className="text-2xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 
-                     bg-clip-text text-transparent 
-                     hover:opacity-90 transition-all duration-200"
-          >
-            DualMind
-          </Link>
-          <button
-            type="button"
-            onClick={clearChat}
-            className="px-4 py-2 rounded-lg border border-aqua text-aqua bg-transparent text-sm font-medium transition-all duration-200 ease-in-out hover:bg-aqua-hover"
-          >
-            Clear Chat
-          </button>
-        </div>
-      </header>
+    <div className="h-screen bg-transparent flex overflow-hidden">
+      {/* Sidebar */}
+      <Sidebar onClearChat={clearChat} />
 
-      {/* Chat Window */}
-      <ChatWindow messages={messages} isTyping={isTyping} />
+      {/* Main Chat Area */}
+      <div className="flex-1 flex flex-col relative z-10 w-full overflow-hidden">
+        {/* Chat Window */}
+        <ChatWindow messages={messages} isTyping={isTyping} />
 
-      {/* Input Bar */}
-      <ChatInput onSend={handleSend} disabled={isTyping} />
+        {/* Input Bar */}
+        <ChatInput onSend={handleSend} disabled={isTyping} />
+      </div>
     </div>
   )
 }

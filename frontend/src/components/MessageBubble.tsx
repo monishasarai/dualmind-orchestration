@@ -43,11 +43,11 @@ const MessageBubble: FC<MessageBubbleProps> = ({ message }) => {
     >
       <div
         className={`
-          max-w-[85%] md:max-w-[75%] rounded-lg px-4 py-3 border transition-all duration-200
+          max-w-[85%] md:max-w-[75%] rounded-2xl px-5 py-4 border transition-all duration-300 backdrop-blur-md
           ${
             isUser
-              ? 'bg-dark-surface border-aqua text-text-primary'
-              : 'bg-dark-surface border-aqua text-text-primary'
+              ? 'bg-neon-blue/10 border-neon-blue/50 text-text-primary shadow-neon-blue rounded-tr-none'
+              : 'glass-panel border-white/10 text-text-primary rounded-tl-none'
           }
         `}
       >

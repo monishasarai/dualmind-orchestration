@@ -42,7 +42,7 @@ const ChatInput = ({ onSend, disabled }: ChatInputProps) => {
   }
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 bg-dark-bg border-t border-dark-border z-40">
+    <div className="w-full glass-panel border-t border-white/10 z-40 relative">
       {pendingFile ? (
         <div className="flex items-center justify-between border-b border-dark-border px-6 py-3 text-sm text-text-secondary">
           <div className="flex items-center gap-3">
@@ -75,9 +75,9 @@ const ChatInput = ({ onSend, disabled }: ChatInputProps) => {
           onKeyDown={handleKeyDown}
           placeholder="Ask anything, or drop a file here…"
           className="
-            flex-1 resize-none rounded-lg border border-dark-border bg-dark-surface px-4 py-3 text-[15px]
-            text-text-primary outline-none transition-all duration-200
-            focus:border-aqua placeholder:text-text-secondary
+            flex-1 resize-none rounded-xl border border-white/10 bg-black/20 backdrop-blur-sm px-5 py-4 text-[15px]
+            text-text-primary outline-none transition-all duration-300
+            focus:border-neon-blue focus:shadow-neon-blue placeholder:text-text-secondary
             disabled:opacity-50 disabled:cursor-not-allowed
           "
           rows={1}
@@ -89,12 +89,12 @@ const ChatInput = ({ onSend, disabled }: ChatInputProps) => {
           onClick={() => void handleSend()}
           disabled={disabled || (!value.trim() && !pendingFile)}
           className={`
-            inline-flex h-11 items-center justify-center rounded-lg px-6 text-sm font-medium
-            border border-aqua text-aqua bg-transparent
-            transition-all duration-200 ease-in-out
-            hover:bg-aqua-hover
-            focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aqua
-            ${disabled || (!value.trim() && !pendingFile) ? 'opacity-50 cursor-not-allowed hover:bg-transparent' : ''}
+            inline-flex h-12 items-center justify-center rounded-xl px-8 text-sm font-bold
+            border border-neon-blue text-neon-blue bg-transparent
+            transition-all duration-300 ease-in-out
+            hover:bg-neon-blue/20 hover:shadow-neon-blue
+            focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neon-blue
+            ${disabled || (!value.trim() && !pendingFile) ? 'opacity-50 cursor-not-allowed hover:bg-transparent hover:shadow-none' : ''}
           `}
         >
           Send

@@ -65,14 +65,14 @@ def check_dependencies():
             missing_packages.append(package)
 
     if missing_packages:
-        print("❌ Missing required packages:")
+        print("[X] Missing required packages:")
         for package in missing_packages:
-            print(f"  • {package}")
+            print(f"  - {package}")
         print("\nPlease install missing packages:")
         print(f"pip install {' '.join(missing_packages)}")
         return False
 
-    print("✅ All required packages are installed")
+    print("[OK] All required packages are installed")
     return True
 
 def create_env_file():
@@ -105,12 +105,12 @@ GRADIO_SHARE=False
         try:
             with open(env_file, 'w') as f:
                 f.write(env_content)
-            print("📝 Created .env template file")
+            print("[+] Created .env template file")
             print("Please edit .env file and add your API keys before running")
         except Exception as e:
-            print(f"❌ Error creating .env file: {e}")
+            print(f"[X] Error creating .env file: {e}")
     else:
-        print("✅ .env file already exists")
+        print("[OK] .env file already exists")
 
 def main():
     """Main entry point for DualMind Orchestrator."""
@@ -177,7 +177,7 @@ Examples:
 
     # Check dependencies before proceeding
     if not check_dependencies():
-        print("\n❌ Please install missing dependencies and try again.")
+        print("\n[X] Please install missing dependencies and try again.")
         sys.exit(1)
 
     # Create .env file if it doesn't exist
@@ -188,9 +188,25 @@ Examples:
 
     logger = logging.getLogger(__name__)
 
+    import threading
+
     try:
+        # Start API server in a background thread for the React frontend
+        logger.info("Starting FastAPI backend server on port 8000...")
+        def run_api_server():
+            import uvicorn
+            from api_server import app
+            # Run API server without signal handlers since it's in a background thread
+            config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning")
+            server = uvicorn.Server(config)
+            server.install_signal_handlers = lambda: None
+            server.run()
+            
+        api_thread = threading.Thread(target=run_api_server, daemon=True)
+        api_thread.start()
+
         # Import and start the UI
-        logger.info("Starting DualMind Orchestrator...")
+        logger.info("Starting DualMind Orchestrator (Gradio UI)...")
 
         from ui import create_ui
 
@@ -244,7 +260,7 @@ Examples:
         sys.exit(0)
     except Exception as e:
         logger.error(f"Error starting DualMind Orchestrator: {e}")
-        print(f"\n❌ Error: {e}")
+        print(f"\n[X] Error: {e}")
         print("Please check the logs for more details.")
         sys.exit(1)
 
