@@ -1,6 +1,8 @@
 """
 LLM Integration Module
-Provides LLM API integration using OpenRouter for the DualMind system.
+Provides LLM API integration using multiple providers (NVIDIA, OpenRouter)
+for the DualMind system. Provider selection is automatic based on available
+API keys, with graceful fallback.
 """
 
 import os
@@ -9,33 +11,31 @@ import logging
 import time
 import re
 import requests
-from typing import Dict, Any, Optional, List, Union, Tuple
+from typing import Dict, Any, Optional, List, Union
 from dotenv import load_dotenv
 from functools import wraps
 from datetime import datetime, timedelta
-import time
-from functools import wraps
-from datetime import datetime, timedelta
+
 
 class RateLimiter:
     def __init__(self, calls_per_minute):
         self.calls_per_minute = calls_per_minute
         self.calls = []
-    
+
     def __call__(self, func):
         @wraps(func)
         def wrapper(*args, **kwargs):
             now = datetime.now()
             # Remove calls older than 1 minute
             self.calls = [t for t in self.calls if now - t < timedelta(minutes=1)]
-            
+
             if len(self.calls) >= self.calls_per_minute:
                 # Calculate wait time
                 oldest_call = self.calls[0]
                 wait_time = (oldest_call + timedelta(minutes=1) - now).total_seconds()
                 if wait_time > 0:
                     time.sleep(wait_time)
-            
+
             self.calls.append(datetime.now())
             return func(*args, **kwargs)
         return wrapper
@@ -43,48 +43,190 @@ class RateLimiter:
 
 class LLMClient:
     """
-    LLM client for making API calls to OpenRouter.
+    Multi-provider LLM client.
+
+    Provider priority:
+        1. NVIDIA Build API (if NVIDIA_API_KEY is set)
+        2. OpenRouter (if OPENROUTER_API_KEY is set)
+
+    Both providers expose the same ``call_llm`` interface so downstream
+    consumers (planner, verifier) require zero changes.
     """
 
     def __init__(self):
-        """Initialize the LLM client."""
+        """Initialize the LLM client with all available providers."""
         load_dotenv()
 
-        self.api_key = os.getenv('OPENROUTER_API_KEY')
-        self.base_url = "https://openrouter.ai/api/v1"
-        
-        # Try multiple models in order of preference
-        self.models = [
-            os.getenv('OPENROUTER_MODEL', 'microsoft/wizardlm-2-8x22b'),
-            'microsoft/wizardlm-2-8x22b',
-            'anthropic/claude-3-haiku',
-            'openai/gpt-3.5-turbo',
-            'meta-llama/llama-3-8b-instruct',
-        ]
-        self.model = self.models[0]  # Start with preferred model
-        
         self.logger = logging.getLogger(__name__)
-        self.rate_limiter = RateLimiter(calls_per_minute=5)
+        self.rate_limiter = RateLimiter(calls_per_minute=10)
 
-        if not self.api_key:
-            self.logger.warning("OpenRouter API key not found. LLM features will use fallback mode.")
-            self.api_key = None
+        # --- Provider: NVIDIA ---
+        self.nvidia_api_key = os.getenv("NVIDIA_API_KEY")
+        self.nvidia_base_url = os.getenv(
+            "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
+        )
+        self.nvidia_model = os.getenv("NVIDIA_MODEL", "mistralai/mistral-nemotron")
+        self._nvidia_client = None  # lazy init
 
-    def _try_next_model(self):
-        """Try the next available model when current one fails."""
-        current_index = self.models.index(self.model) if self.model in self.models else -1
-        next_index = (current_index + 1) % len(self.models)
-        self.model = self.models[next_index]
-        self.logger.warning(f"Switching to model: {self.model}")
+        # --- Provider: OpenRouter ---
+        self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+        self.openrouter_base_url = "https://openrouter.ai/api/v1"
+        self.openrouter_models = [
+            os.getenv("OPENROUTER_MODEL", "microsoft/wizardlm-2-8x22b"),
+            "microsoft/wizardlm-2-8x22b",
+            "anthropic/claude-3-haiku",
+            "openai/gpt-3.5-turbo",
+            "meta-llama/llama-3-8b-instruct",
+        ]
+        self.openrouter_model = self.openrouter_models[0]
 
-    def _rate_limit(self):
-        """Simple rate limiting to prevent hitting API limits."""
-        current_time = time.time()
-        if hasattr(self, '_last_call'):
-            elapsed = current_time - self._last_call
-            if elapsed < 1.0:  # 1 second between calls
-                time.sleep(1.0 - elapsed)
-        self._last_call = time.time()
+        # --- Determine active provider ---
+        if self.nvidia_api_key:
+            self._active_provider = "nvidia"
+            self.logger.info(
+                f"Primary LLM provider: NVIDIA ({self.nvidia_model})"
+            )
+        elif self.openrouter_api_key:
+            self._active_provider = "openrouter"
+            self.logger.info(
+                f"Primary LLM provider: OpenRouter ({self.openrouter_model})"
+            )
+        else:
+            self._active_provider = None
+            self.logger.warning(
+                "No LLM API key found (NVIDIA_API_KEY / OPENROUTER_API_KEY). "
+                "LLM features will use fallback mode."
+            )
+
+    # ------------------------------------------------------------------
+    # NVIDIA helpers
+    # ------------------------------------------------------------------
+
+    def _get_nvidia_client(self):
+        """Lazy-initialise the OpenAI-compatible NVIDIA client."""
+        if self._nvidia_client is None:
+            try:
+                from openai import OpenAI
+
+                self._nvidia_client = OpenAI(
+                    base_url=self.nvidia_base_url,
+                    api_key=self.nvidia_api_key,
+                )
+            except ImportError:
+                self.logger.error(
+                    "openai package not installed. Run: pip install openai"
+                )
+                raise
+        return self._nvidia_client
+
+    def _call_nvidia(
+        self,
+        prompt: str,
+        system_prompt: Optional[str],
+        max_tokens: int,
+        temperature: float = 0.6,
+        top_p: float = 0.7,
+    ) -> Optional[str]:
+        """Execute a chat completion via NVIDIA Build API."""
+        client = self._get_nvidia_client()
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        completion = client.chat.completions.create(
+            model=self.nvidia_model,
+            messages=messages,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            stream=False,
+        )
+
+        if completion.choices and completion.choices[0].message:
+            content = completion.choices[0].message.content
+            return content.strip() if content else None
+        return None
+
+    # ------------------------------------------------------------------
+    # OpenRouter helpers
+    # ------------------------------------------------------------------
+
+    def _try_next_openrouter_model(self):
+        """Rotate to the next available OpenRouter model."""
+        idx = (
+            self.openrouter_models.index(self.openrouter_model)
+            if self.openrouter_model in self.openrouter_models
+            else -1
+        )
+        self.openrouter_model = self.openrouter_models[
+            (idx + 1) % len(self.openrouter_models)
+        ]
+        self.logger.warning(f"Switching OpenRouter model to: {self.openrouter_model}")
+
+    def _call_openrouter(
+        self,
+        prompt: str,
+        system_prompt: Optional[str],
+        max_tokens: int,
+    ) -> Optional[str]:
+        """Execute a chat completion via OpenRouter REST API."""
+        headers = {
+            "Authorization": f"Bearer {self.openrouter_api_key.strip()}",
+            "X-API-Key": self.openrouter_api_key.strip(),
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/satvik2106/HuggingGpt",
+            "X-Title": "DualMind Orchestrator",
+            "Accept": "application/json",
+        }
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        data = {
+            "model": self.openrouter_model,
+            "messages": messages,
+            "max_tokens": max(100, min(max_tokens, 4000)),
+            "temperature": 0.3,
+            "top_p": 0.9,
+            "frequency_penalty": 0.1,
+            "presence_penalty": 0.1,
+        }
+
+        resp = requests.post(
+            f"{self.openrouter_base_url}/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=60,
+        )
+
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("retry-after", 5))
+            self.logger.warning(f"OpenRouter rate-limited. Waiting {retry_after}s...")
+            time.sleep(retry_after)
+            raise requests.RequestException("Rate limited", response=resp)
+
+        if resp.status_code == 404:
+            self._try_next_openrouter_model()
+            raise requests.RequestException("Model not found", response=resp)
+
+        resp.raise_for_status()
+        result = resp.json()
+
+        if not result.get("choices"):
+            raise ValueError("No choices in OpenRouter response")
+
+        content = result["choices"][0]["message"]["content"]
+        if not content:
+            raise ValueError("Empty content in OpenRouter response")
+
+        return content
+
+    # ------------------------------------------------------------------
+    # JSON extraction
+    # ------------------------------------------------------------------
 
     def _extract_json_from_response(self, text: str) -> str:
         """Extract JSON from LLM response, handling various formats."""
@@ -92,18 +234,20 @@ class LLMClient:
             raise ValueError("Empty response from LLM")
 
         # Try to find JSON object or array
-        json_match = re.search(r'\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}|\[[^\]]*\]', text, re.DOTALL)
+        json_match = re.search(
+            r'\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}|\[[^\]]*\]',
+            text,
+            re.DOTALL,
+        )
         if json_match:
             try:
-                # Try to parse the matched JSON
                 json.loads(json_match.group(0))
                 return json_match.group(0)
             except json.JSONDecodeError:
                 pass
 
-        # If no valid JSON found, try to clean and parse the whole text
+        # Remove markdown code blocks
         try:
-            # Remove markdown code blocks if present
             cleaned = re.sub(r'```(?:json)?\s*', '', text, flags=re.IGNORECASE)
             cleaned = re.sub(r'```\s*$', '', cleaned)
             json.loads(cleaned)
@@ -111,9 +255,8 @@ class LLMClient:
         except json.JSONDecodeError:
             pass
 
-        # If all else fails, try to extract the first valid JSON object
+        # Last resort
         try:
-            # Look for content between curly braces
             match = re.search(r'\{.*\}', text, re.DOTALL)
             if match:
                 return match.group(0)
@@ -122,173 +265,162 @@ class LLMClient:
 
         raise ValueError("Could not extract valid JSON from response")
 
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
     def call_llm(
-        self, 
-        prompt: str, 
-        system_prompt: str = None, 
+        self,
+        prompt: str,
+        system_prompt: str = None,
         max_tokens: int = 1000,
         max_retries: int = 3,
         retry_delay: float = 2.0,
-        require_json: bool = False
+        require_json: bool = False,
     ) -> Optional[Union[str, Dict, List]]:
         """
-        Make a call to the LLM API with retry logic and JSON handling.
+        Make a call to the LLM API with retry logic and provider fallback.
+
+        The method tries the active provider first.  If it fails after
+        exhausting retries it falls back to the other provider (if available).
 
         Args:
             prompt: The user prompt
             system_prompt: Optional system prompt
             max_tokens: Maximum tokens in response
             max_retries: Maximum number of retry attempts
-            retry_delay: Initial delay between retries in seconds (will be doubled each retry)
-            require_json: If True, will attempt to parse response as JSON and return dict/list
+            retry_delay: Initial delay between retries (doubles each retry)
+            require_json: If True, parse response as JSON and return dict/list
 
         Returns:
-            Response content (str, dict, or list) or None if all retries fail
+            Response content (str, dict, or list) or None if all fail
         """
-        if not self.api_key:
-            self.logger.warning("No API key available for LLM call")
+        # Build ordered list of providers to try
+        providers = []
+        if self._active_provider == "nvidia" and self.nvidia_api_key:
+            providers.append("nvidia")
+        if self.openrouter_api_key:
+            providers.append("openrouter")
+        if self._active_provider == "nvidia" and "nvidia" not in providers:
+            pass  # already tried
+        if not providers:
+            self.logger.warning("No LLM provider available.")
             return None
 
-        retry_count = 0
-        last_error = None
+        for provider in providers:
+            result = self._call_provider(
+                provider=provider,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+                max_retries=max_retries,
+                retry_delay=retry_delay,
+                require_json=require_json,
+            )
+            if result is not None:
+                return result
+            self.logger.warning(
+                f"Provider '{provider}' failed. Trying next provider..."
+            )
+
+        self.logger.error("All LLM providers exhausted.")
+        if require_json:
+            return {
+                "error": "Failed to get valid response from LLM",
+                "details": "All providers exhausted",
+            }
+        return None
+
+    def _call_provider(
+        self,
+        provider: str,
+        prompt: str,
+        system_prompt: Optional[str],
+        max_tokens: int,
+        max_retries: int,
+        retry_delay: float,
+        require_json: bool,
+    ) -> Optional[Union[str, Dict, List]]:
+        """Try a single provider with retries."""
         delay = retry_delay
+        last_error = None
 
-        while retry_count <= max_retries:
+        for attempt in range(1, max_retries + 1):
             try:
-                self._rate_limit()  # Enforce rate limiting
-                
-                headers = {
-                    'Authorization': f'Bearer {self.api_key.strip()}',
-                    'X-API-Key': self.api_key.strip(),
-                    'Content-Type': 'application/json',
-                    'HTTP-Referer': 'https://github.com/Shashank-Reddy-Y/JARVIS-DOMAIN-SPECIFIC-V1',
-                    'X-Title': 'DualMind Orchestrator',
-                    'Accept': 'application/json'
-                }
+                # Rate limit
+                current_time = time.time()
+                if hasattr(self, '_last_call'):
+                    elapsed = current_time - self._last_call
+                    if elapsed < 1.0:
+                        time.sleep(1.0 - elapsed)
+                self._last_call = time.time()
 
-                messages = []
-                if system_prompt:
-                    messages.append({"role": "system", "content": system_prompt})
-                messages.append({"role": "user", "content": prompt})
-
-                data = {
-                    'model': self.model,
-                    'messages': messages,
-                    'max_tokens': max(100, min(max_tokens, 4000)),  # Ensure reasonable limits
-                    'temperature': 0.3,
-                    'top_p': 0.9,
-                    'frequency_penalty': 0.1,
-                    'presence_penalty': 0.1
-                }
-
-                # Add JSON response format if requested and model supports it
-                if require_json and 'gpt' in self.model.lower():
-                    data['response_format'] = {'type': 'json_object'}
-
-                self.logger.debug(f"Sending request to {self.model} (attempt {retry_count + 1}/{max_retries + 1})")
-                
-                response = requests.post(
-                    f"{self.base_url}/chat/completions",
-                    headers=headers,
-                    json=data,  # Use json parameter to automatically serialize
-                    timeout=60  # Increased timeout for complex queries
+                self.logger.debug(
+                    f"[{provider}] attempt {attempt}/{max_retries}, "
+                    f"max_tokens={max_tokens}"
                 )
 
-                # Handle rate limiting
-                if response.status_code == 429:
-                    retry_after = int(response.headers.get('retry-after', 5))
-                    self.logger.warning(f"Rate limited. Waiting {retry_after} seconds...")
-                    time.sleep(retry_after)
-                    continue
+                # Dispatch to provider
+                if provider == "nvidia":
+                    content = self._call_nvidia(prompt, system_prompt, max_tokens)
+                elif provider == "openrouter":
+                    content = self._call_openrouter(prompt, system_prompt, max_tokens)
+                else:
+                    self.logger.error(f"Unknown provider: {provider}")
+                    return None
 
-                response.raise_for_status()
-                result = response.json()
-
-                if not result.get('choices') or len(result['choices']) == 0:
-                    raise ValueError("No choices in API response")
-
-                content = result['choices'][0]['message']['content']
-                
                 if not content:
-                    raise ValueError("Empty content in API response")
+                    raise ValueError(f"Empty response from {provider}")
 
-                self.logger.info("LLM API call successful")
-                
-                # If JSON is required, try to parse it
+                self.logger.info(f"[{provider}] API call successful.")
+
+                # JSON handling
                 if require_json:
                     try:
                         if isinstance(content, str):
                             json_str = self._extract_json_from_response(content)
                             return json.loads(json_str)
-                        return content  # Already parsed by requests
+                        return content
                     except Exception as e:
-                        self.logger.warning(f"Failed to parse JSON response: {e}")
-                        if retry_count < max_retries:
-                            retry_count += 1
+                        self.logger.warning(f"JSON parse failed: {e}")
+                        if attempt < max_retries:
                             time.sleep(delay)
-                            delay *= 2  # Exponential backoff
+                            delay *= 2
                             continue
                         raise
 
                 return content
 
-            except requests.RequestException as e:
-                last_error = e
-                status_code = getattr(e.response, 'status_code', None)
-                if status_code == 429:  # Rate limited
-                    retry_after = int(e.response.headers.get('retry-after', min(30, 5 * (retry_count + 1))))
-                    self.logger.warning(f"Rate limited. Waiting {retry_after} seconds...")
-                    time.sleep(retry_after)
-                    continue
-                elif status_code == 404:  # Model not found, try next model
-                    self.logger.warning(f"Model {self.model} not found (404). Trying next model...")
-                    self._try_next_model()
-                    # Reset retry count for new model
-                    retry_count = 0
-                    delay = retry_delay
-                    continue
-                elif status_code and status_code >= 500:
-                    self.logger.error(f"Server error ({status_code}): {e}")
-                else:
-                    self.logger.error(f"Request failed: {e}")
-
-            except (json.JSONDecodeError, ValueError) as e:
-                last_error = e
-                self.logger.error(f"Failed to parse response: {e}")
-                if retry_count < max_retries and 'context length' in str(e).lower():
-                    # If context length exceeded, reduce max_tokens and retry
-                    max_tokens = max(500, max_tokens // 2)
-                    self.logger.warning(f"Context length exceeded, reducing max_tokens to {max_tokens}")
-                    retry_count += 1
-                    time.sleep(delay)
-                    delay *= 2
-                    continue
-
             except Exception as e:
                 last_error = e
-                self.logger.error(f"Unexpected error: {e}", exc_info=True)
+                error_msg = str(e)
+                self.logger.error(f"[{provider}] Error: {error_msg}")
 
-            # If we get here, an error occurred and we should retry if possible
-            retry_count += 1
-            if retry_count <= max_retries:
-                self.logger.warning(f"Retrying in {delay:.1f} seconds... (attempt {retry_count}/{max_retries + 1})")
-                time.sleep(delay)
-                delay = min(60, delay * 2)  # Exponential backoff with max 60s
-            else:
-                self.logger.error(f"Max retries exceeded. Last error: {last_error}")
-                if require_json:
-                    # If we need JSON but failed, return a basic error structure
-                    return {
-                        "error": "Failed to get valid response from LLM",
-                        "details": str(last_error)[:200] if last_error else "Unknown error"
-                    }
-                return None
+                if "context length" in error_msg.lower():
+                    max_tokens = max(500, max_tokens // 2)
+                    self.logger.warning(
+                        f"Context length exceeded, reducing max_tokens to {max_tokens}"
+                    )
 
+                if attempt < max_retries:
+                    self.logger.warning(f"Retrying in {delay:.1f}s...")
+                    time.sleep(delay)
+                    delay = min(60, delay * 2)
+
+        self.logger.error(
+            f"[{provider}] Max retries exceeded. Last error: {last_error}"
+        )
         return None
 
     def is_available(self) -> bool:
-        """Check if LLM API is available and configured."""
-        return self.api_key is not None
+        """Check if any LLM provider is available."""
+        return self.nvidia_api_key is not None or self.openrouter_api_key is not None
+
+    def get_active_provider(self) -> Optional[str]:
+        """Return the name of the active primary provider."""
+        return self._active_provider
+
 
 # Global LLM client instance
 llm_client = LLMClient()
+
